@@ -143,6 +143,11 @@
         try { return localStorage.getItem('macrolens_gemini_key') || ''; } catch (e) { return ''; }
       });
 
+      const [model, setModel] = useState(() => {
+        try { return localStorage.getItem('macrolens_model') || 'gemini-3.8-flash'; } catch (e) { return 'gemini-3.8-flash'; }
+      });
+      useEffect(() => { try { localStorage.setItem('macrolens_model', model); } catch (e) {} }, [model]);
+
       useEffect(() => { saveJson('macrolens_goals', goals); }, [goals]);
       useEffect(() => { saveJson('macrolens_meals', meals); }, [meals]);
       useEffect(() => { saveJson('macrolens_recipes', savedRecipes); }, [savedRecipes]);
@@ -196,7 +201,7 @@
         let res;
         try {
           res = await fetch(
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+            `https://generativelanguage.googleapis.com/v1beta/models/${(model || '').trim() || 'gemini-3.8-flash'}:generateContent`,
             {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey.trim() },
@@ -835,6 +840,16 @@
                     autoComplete="off"
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
                   />
+                  <label className="text-xs text-zinc-400 block pt-2">AI model</label>
+                  <input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
+                  />
+                  <p className="text-[11px] text-zinc-500">If Google retires this model, paste the newer name from the error message here.</p>
                 </div>
 
                 <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-3">
