@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#09090B" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MacroLens" />
+  <title>MacroLens — AI Nutrition Tracker</title>
+
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+
+  <!-- Pinned versions (cached by sw.js so the app also opens offline) -->
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+
+  <style>
+    body {
+      background-color: #09090B;
+      color: #FAFAFA;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior-y: none;
+      -webkit-text-size-adjust: 100%;
+    }
+    /* 16px inputs stop iOS from zooming the page when a field is focused */
+    input, textarea, select { font-size: 16px !important; }
+    .safe-top { padding-top: env(safe-area-inset-top, 0px); }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #09090B; }
+    ::-webkit-scrollbar-thumb { background: #27272A; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-[#09090B] text-[#FAFAFA] antialiased selection:bg-blue-500/30">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const Icon = ({ name, className = "w-4 h-4" }) => {
+      const icons = {
+        flame: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />,
+        plus: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />,
+        camera: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M15 13a3 3 0 11-6 0 3 3 0 016 0z" />,
+        mic: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />,
+        scale: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />,
+        trash: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />,
+        book: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />,
+        chart: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />,
+        settings: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z" />,
+        utensils: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3v7a4 4 0 004 4h1v7h2v-7h1a4 4 0 004-4V3h-2v5h-2V3H9v5H7V3H5zm13 0v10h2v8h2V3c-2.21 0-4 1.79-4 4z" />,
+        x: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />,
+        chevronDown: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />,
+        chevronUp: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 15l7-7 7 7" />
+      };
+      return (
+        <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          {icons[name]}
+        </svg>
+      );
+    };
+
+    const COMMON_STAPLES = [
+      { name: 'Chicken Breast (Cooked)', cal: 165, p: 31.0, c: 0.0, f: 3.6, fib: 0.0, defaultG: 180 },
+      { name: 'Lean Ground Beef (5% Fat)', cal: 137, p: 21.4, c: 0.0, f: 5.0, fib: 0.0, defaultG: 150 },
+      { name: 'Cooked Jasmine / White Rice', cal: 130, p: 2.7, c: 28.2, f: 0.3, fib: 0.4, defaultG: 200 },
+      { name: 'Rolled Oats (Dry)', cal: 389, p: 16.9, c: 66.3, f: 6.9, fib: 10.6, defaultG: 80 },
+      { name: 'Skyr / 0% Greek Yogurt', cal: 63, p: 11.0, c: 4.0, f: 0.2, fib: 0.0, defaultG: 250 },
+      { name: 'Whey Protein Isolate', cal: 370, p: 82.0, c: 4.0, f: 2.0, fib: 0.0, defaultG: 35 },
+      { name: 'Whole Eggs (1 Large ~50g)', cal: 143, p: 12.6, c: 0.7, f: 9.5, fib: 0.0, defaultG: 150 },
+      { name: 'Extra Virgin Olive Oil', cal: 884, p: 0.0, c: 0.0, f: 100.0, fib: 0.0, defaultG: 10 },
+      { name: 'Salmon Fillet (Raw)', cal: 208, p: 20.4, c: 0.0, f: 13.4, fib: 0.0, defaultG: 160 },
+      { name: 'Steamed Broccoli', cal: 35, p: 2.4, c: 7.2, f: 0.4, fib: 3.3, defaultG: 120 },
+      { name: 'Feta Cheese', cal: 265, p: 14.2, c: 4.1, f: 21.3, fib: 0.0, defaultG: 50 },
+    ];
+
+    const QUICK_LABELS = { calories: 'Calories (kcal)', protein: 'Protein (g)', carbs: 'Carbs (g)', fat: 'Fat (g)', fiber: 'Fiber (g)', weight_g: 'Portion weight (g)' };
+    const DEFAULT_GOALS = { calories: 2400, protein: 180, carbs: 250, fat: 75, fiber: 35 };
+    // Local-date helpers (toISOString() is UTC and shifts evening meals to tomorrow)
+    const toDateStr = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const getTodayStr = () => toDateStr(new Date());
+
+    let _uid = 0;
+    const uid = () => `${Date.now().toString(36)}-${(_uid++).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Safe localStorage (private mode / corrupted data must never white-screen the app)
+    const loadJson = (key, fallback) => {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (e) { return fallback; }
+    };
+    const saveJson = (key, value) => {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* storage full or blocked */ }
+    };
+
+    // Shrink phone photos before upload (full-size photos are several MB)
+    const downscaleImage = (file, maxSide = 1024, quality = 0.8) => new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image. Try a JPEG or PNG photo.')); };
+      img.src = url;
+    });
+
+    const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [selectedDate, setSelectedDate] = useState(getTodayStr());
+
+      const [goals, setGoals] = useState(() => ({ ...DEFAULT_GOALS, ...loadJson('macrolens_goals', {}) }));
+      const [meals, setMeals] = useState(() => {
+        const m = loadJson('macrolens_meals', []);
+        return Array.isArray(m) ? m : [];
+      });
+      const [savedRecipes, setSavedRecipes] = useState(() => {
+        const r = loadJson('macrolens_recipes', []);
+        return Array.isArray(r) ? r : [];
+      });
+      const [apiKey, setApiKey] = useState(() => {
+        try { return localStorage.getItem('macrolens_gemini_key') || ''; } catch (e) { return ''; }
+      });
+
+      useEffect(() => { saveJson('macrolens_goals', goals); }, [goals]);
+      useEffect(() => { saveJson('macrolens_meals', meals); }, [meals]);
+      useEffect(() => { saveJson('macrolens_recipes', savedRecipes); }, [savedRecipes]);
+      useEffect(() => { try { localStorage.setItem('macrolens_gemini_key', apiKey); } catch (e) {} }, [apiKey]);
+
+      const [backupMsg, setBackupMsg] = useState('');
+      const [installPrompt, setInstallPrompt] = useState(null);
+      useEffect(() => {
+        const onPrompt = (e) => { e.preventDefault(); setInstallPrompt(e); };
+        window.addEventListener('beforeinstallprompt', onPrompt);
+        return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+      }, []);
+
+      const [trackModalOpen, setTrackModalOpen] = useState(false);
+      const [trackMode, setTrackMode] = useState('hub');
+      const [manualSubMode, setManualSubMode] = useState('builder');
+      const [manualMealName, setManualMealName] = useState('');
+      const [quickMacros, setQuickMacros] = useState({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
+      const [draftItems, setDraftItems] = useState([]);
+
+      const [aiPromptText, setAiPromptText] = useState('');
+      const [photoBase64, setPhotoBase64] = useState(null);
+      const [photoMimeType, setPhotoMimeType] = useState('image/jpeg');
+      const [photoHint, setPhotoHint] = useState('');
+      const [isAiLoading, setIsAiLoading] = useState(false);
+      const [aiError, setAiError] = useState('');
+      const [isListening, setIsListening] = useState(false);
+      const recognitionRef = useRef(null);
+
+      const [expandedMealId, setExpandedMealId] = useState(null);
+      const [recipeSubTab, setRecipeSubTab] = useState('saved');
+      const [recipeQuery, setRecipeQuery] = useState('');
+      const [aiGeneratedRecipes, setAiGeneratedRecipes] = useState([]);
+      const [isRecipeLoading, setIsRecipeLoading] = useState(false);
+      const [portionMultiplier, setPortionMultiplier] = useState({});
+      const [analyticsRange, setAnalyticsRange] = useState(7);
+
+      const callGeminiJson = async (prompt, imageBase64 = null, mimeType = 'image/jpeg') => {
+        if (!apiKey.trim()) {
+          throw new Error('Please paste your free Gemini API Key in the Goals/Settings tab first.');
+        }
+        const parts = [{ text: prompt }];
+        if (imageBase64) {
+          parts.push({
+            inlineData: {
+              mimeType,
+              data: imageBase64.split(',')[1] || imageBase64
+            }
+          });
+        }
+        let res;
+        try {
+          res = await fetch(
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+            {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey.trim() },
+            body: JSON.stringify({
+              contents: [{ parts }],
+              generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
+            })
+            }
+          );
+        } catch (e) {
+          throw new Error('No connection. AI features need internet — check your signal and try again.');
+        }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err?.error?.message || `API error (${res.status}). Check your Gemini key in Goals.`);
+        }
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+        try {
+          return JSON.parse(stripFences(text));
+        } catch (e) {
+          throw new Error('The AI reply could not be read. Please try again.');
+        }
+      };
+
+      const toggleVoiceDictation = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          setAiError('Voice dictation is not available here. Type your meal and use the keyboard microphone instead.');
+          return;
+        }
+        if (isListening) {
+          recognitionRef.current?.stop();
+          setIsListening(false);
+          return;
+        }
+        const rec = new SpeechRecognition();
+        rec.lang = 'en-US';
+        rec.onstart = () => setIsListening(true);
+        rec.onend = () => setIsListening(false);
+        rec.onerror = () => { setIsListening(false); setAiError('Dictation stopped. Type your meal or use the keyboard microphone.'); };
+        rec.onresult = (e) => {
+          const t = e.results[0][0].transcript;
+          setAiPromptText((p) => (p ? `${p} ${t}` : t));
+        };
+        recognitionRef.current = rec;
+        rec.start();
+      };
+
+      const handlePhotoUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setAiError('');
+        try {
+          setPhotoBase64(await downscaleImage(file));
+          setPhotoMimeType('image/jpeg');
+        } catch (err) {
+          setAiError(err.message);
+        }
+        e.target.value = '';
+      };
+
+      const handleAiAnalyzeMeal = async (mode) => {
+        setAiError('');
+        setIsAiLoading(true);
+        try {
+          const prompt = mode === 'photo'
+            ? `You are a sports nutritionist. Analyze this food photo. ${photoHint ? `Hint: "${photoHint}".` : ''}
+               Identify each ingredient, estimate its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g).
+               Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`
+            : `Parse this meal into exact ingredients with gram weights and macros: "${aiPromptText}".
+               Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
+
+          const result = await callGeminiJson(prompt, mode === 'photo' ? photoBase64 : null, photoMimeType);
+          setManualMealName(result.meal_name || 'Logged Meal');
+          setDraftItems((result.items || []).map((it, idx) => {
+            const w = Number(it.weight_g) || 100;
+            return {
+              id: uid(),
+              name: it.name || 'Ingredient',
+              weight_g: w,
+              base_weight_g: w,
+              base_calories: Number(it.calories) || 0,
+              base_protein: Number(it.protein) || 0,
+              base_carbs: Number(it.carbs) || 0,
+              base_fat: Number(it.fat) || 0,
+              base_fiber: Number(it.fiber) || 0,
+              calories: Math.round(Number(it.calories) || 0),
+              protein: Number(Number(it.protein || 0).toFixed(1)),
+              carbs: Number(Number(it.carbs || 0).toFixed(1)),
+              fat: Number(Number(it.fat || 0).toFixed(1)),
+              fiber: Number(Number(it.fiber || 0).toFixed(1)),
+            };
+          }));
+          setTrackMode('review');
+        } catch (err) {
+          setAiError(err.message);
+        } finally {
+          setIsAiLoading(false);
+        }
+      };
+
+      const updateDraftItemWeight = (id, newWeight) => {
+        const w = Math.max(0, Number(newWeight) || 0);
+        setDraftItems((prev) => prev.map((it) => {
+          if (it.id !== id) return it;
+          const r = it.base_weight_g > 0 ? w / it.base_weight_g : 1;
+          return {
+            ...it,
+            weight_g: w,
+            calories: Math.round(it.base_calories * r),
+            protein: Number((it.base_protein * r).toFixed(1)),
+            carbs: Number((it.base_carbs * r).toFixed(1)),
+            fat: Number((it.base_fat * r).toFixed(1)),
+            fiber: Number((it.base_fiber * r).toFixed(1)),
+          };
+        }));
+      };
+
+      const addStapleToDraft = (s) => {
+        const r = s.defaultG / 100;
+        setDraftItems((p) => [...p, {
+          id: uid(),
+          name: s.name,
+          weight_g: s.defaultG,
+          base_weight_g: 100,
+          base_calories: s.cal,
+          base_protein: s.p,
+          base_carbs: s.c,
+          base_fat: s.f,
+          base_fiber: s.fib,
+          calories: Math.round(s.cal * r),
+          protein: Number((s.p * r).toFixed(1)),
+          carbs: Number((s.c * r).toFixed(1)),
+          fat: Number((s.f * r).toFixed(1)),
+          fiber: Number((s.fib * r).toFixed(1)),
+        }]);
+      };
+
+      const saveMealToLog = () => {
+        if (trackMode === 'manual' && manualSubMode === 'quick') {
+          const cal = Number(quickMacros.calories) || 0;
+          const p = Number(quickMacros.protein) || 0;
+          const c = Number(quickMacros.carbs) || 0;
+          const f = Number(quickMacros.fat) || 0;
+          const fib = Number(quickMacros.fiber) || 0;
+          const w = Number(quickMacros.weight_g) || 100;
+          if (!cal && !p && !c && !f && !fib) return;
+          setMeals((prev) => [{
+            id: uid(),
+            date: selectedDate,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            name: manualMealName.trim() || 'Quick Entry',
+            items: [{
+              id: uid(),
+              name: manualMealName.trim() || 'Portion',
+              weight_g: w, base_weight_g: w,
+              base_calories: cal, base_protein: p, base_carbs: c, base_fat: f, base_fiber: fib,
+              calories: Math.round(cal), protein: p, carbs: c, fat: f, fiber: fib
+            }]
+          }, ...prev]);
+        } else {
+          if (draftItems.length === 0) return;
+          setMeals((prev) => [{
+            id: uid(),
+            date: selectedDate,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            name: manualMealName.trim() || 'Logged Meal',
+            items: draftItems
+          }, ...prev]);
+        }
+        closeTrackModal();
+      };
+
+      const resetTrackForm = () => {
+        setManualMealName('');
+        setDraftItems([]);
+        setAiPromptText('');
+        setPhotoBase64(null);
+        setPhotoHint('');
+        setQuickMacros({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
+        setAiError('');
+      };
+      const openTrackModal = (mode) => { resetTrackForm(); setTrackMode(mode); setTrackModalOpen(true); };
+      const closeTrackModal = () => { setTrackModalOpen(false); setTrackMode('hub'); resetTrackForm(); };
+
+      const updateLoggedItemWeight = (mealId, itemId, newWeight) => {
+        const w = Math.max(0, Number(newWeight) || 0);
+        setMeals((prev) => prev.map((m) => m.id !== mealId ? m : {
+          ...m,
+          items: m.items.map((it) => {
+            if (it.id !== itemId) return it;
+            const r = it.base_weight_g > 0 ? w / it.base_weight_g : 1;
+            return {
+              ...it,
+              weight_g: w,
+              calories: Math.round(it.base_calories * r),
+              protein: Number((it.base_protein * r).toFixed(1)),
+              carbs: Number((it.base_carbs * r).toFixed(1)),
+              fat: Number((it.base_fat * r).toFixed(1)),
+              fiber: Number((it.base_fiber * r).toFixed(1)),
+            };
+          })
+        }));
+      };
+
+      const handleSearchAiRecipes = async (customQ) => {
+        const q = customQ || recipeQuery;
+        if (!q.trim()) return;
+        setIsRecipeLoading(true);
+        setAiError('');
+        try {
+          const prompt = `Generate 3 high-protein recipes matching: "${q}". Include exact gram weights for every ingredient.
+          Return strictly JSON: { "recipes": [{ "name": "String", "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number, "ingredients": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }] }`;
+          const res = await callGeminiJson(prompt);
+          setAiGeneratedRecipes(res.recipes || []);
+        } catch (err) {
+          setAiError(err.message);
+        } finally {
+          setIsRecipeLoading(false);
+        }
+      };
+
+      const logRecipeToDiary = (recipe, mult = 1) => {
+        const items = (recipe.ingredients || []).map((ing, i) => ({
+          id: uid(),
+          name: ing.name,
+          weight_g: Math.round((ing.weight_g || 100) * mult),
+          base_weight_g: ing.weight_g || 100,
+          base_calories: ing.calories || 0,
+          base_protein: ing.protein || 0,
+          base_carbs: ing.carbs || 0,
+          base_fat: ing.fat || 0,
+          base_fiber: ing.fiber || 0,
+          calories: Math.round((ing.calories || 0) * mult),
+          protein: Number(((ing.protein || 0) * mult).toFixed(1)),
+          carbs: Number(((ing.carbs || 0) * mult).toFixed(1)),
+          fat: Number(((ing.fat || 0) * mult).toFixed(1)),
+          fiber: Number(((ing.fiber || 0) * mult).toFixed(1)),
+        }));
+        setMeals((p) => [{
+          id: uid(),
+          date: selectedDate,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          name: `${recipe.name}${mult !== 1 ? ` (${mult}x)` : ''}`,
+          items
+        }, ...p]);
+        setActiveTab('dashboard');
+      };
+
+      const todaysMeals = useMemo(() => meals.filter((m) => m.date === selectedDate), [meals, selectedDate]);
+      const dailyTotals = useMemo(() => todaysMeals.reduce((acc, m) => {
+        m.items.forEach((it) => {
+          acc.calories += Number(it.calories) || 0;
+          acc.protein += Number(it.protein) || 0;
+          acc.carbs += Number(it.carbs) || 0;
+          acc.fat += Number(it.fat) || 0;
+          acc.fiber += Number(it.fiber) || 0;
+        });
+        return acc;
+      }, { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }), [todaysMeals]);
+
+      const analyticsData = useMemo(() => {
+        const days = [];
+        const base = new Date();
+        for (let i = analyticsRange - 1; i >= 0; i--) {
+          const d = new Date(base);
+          d.setDate(base.getDate() - i);
+          const dStr = toDateStr(d);
+          const dm = meals.filter((m) => m.date === dStr);
+          let cal = 0;
+          dm.forEach((m) => m.items.forEach((it) => cal += Number(it.calories) || 0));
+          days.push({ date: dStr.slice(5), calories: Math.round(cal) });
+        }
+        return days;
+      }, [meals, analyticsRange]);
+      const loggedDays = analyticsData.filter((d) => d.calories > 0);
+      const avgCalories = loggedDays.length ? Math.round(loggedDays.reduce((a, d) => a + d.calories, 0) / loggedDays.length) : 0;
+
+      const exportBackup = () => {
+        const blob = new Blob([JSON.stringify({ app: 'macrolens', version: 1, goals, meals, recipes: savedRecipes }, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `macrolens-backup-${getTodayStr()}.json`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        setBackupMsg('Backup downloaded.');
+      };
+      const importBackup = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const d = JSON.parse(ev.target.result);
+            if (d.app !== 'macrolens') throw new Error('bad');
+            if (!window.confirm('Replace the data on this device with this backup?')) return;
+            setGoals({ ...DEFAULT_GOALS, ...(d.goals || {}) });
+            setMeals(Array.isArray(d.meals) ? d.meals : []);
+            setSavedRecipes(Array.isArray(d.recipes) ? d.recipes : []);
+            setBackupMsg('Backup restored.');
+          } catch (err) {
+            setBackupMsg('That file is not a MacroLens backup.');
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+      };
+      const saveRecipe = (r) => setSavedRecipes((p) => p.some((x) => x.name === r.name) ? p : [...p, r]);
+
+      const calPct = Math.min(100, Math.round((dailyTotals.calories / (goals.calories || 1)) * 100));
+      const ringRadius = 66;
+      const ringCircumference = 2 * Math.PI * ringRadius;
+      const ringOffset = ringCircumference - (calPct / 100) * ringCircumference;
+
+      return (
+        <div className="min-h-[100dvh] bg-[#09090B] text-[#FAFAFA] pb-32">
+          <header className="sticky top-0 z-20 bg-[#09090B]/90 backdrop-blur-md border-b border-zinc-800 px-4 pb-3.5 pt-3.5 safe-top">
+            <div className="max-w-xl mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-blue-500">
+                  <Icon name="flame" className="w-4 h-4" />
+                </div>
+                <div>
+                  <h1 className="text-sm font-semibold tracking-tight">MacroLens</h1>
+                  <p className="text-[11px] text-zinc-400">AI nutrition tracker</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 rounded-lg px-2.5 py-1.5"
+                />
+                <button
+                  onClick={() => openTrackModal('hub')}
+                  className="flex items-center gap-1 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg"
+                >
+                  <Icon name="plus" className="w-3.5 h-3.5" />
+                  <span>Track food</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-xl mx-auto px-4 pt-5 space-y-5">
+            {!apiKey && (
+              <div className="bg-zinc-900 border border-amber-500/30 rounded-xl p-3 flex items-center justify-between text-xs">
+                <span className="text-zinc-300">Add a free Gemini API key in Goals to turn on photo, voice and AI recipes.</span>
+                <button onClick={() => setActiveTab('settings')} className="text-amber-400 font-semibold ml-2">Setup</button>
+              </div>
+            )}
+
+            {activeTab === 'dashboard' && (
+              <>
+                <section className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5">
+                  <div className="flex flex-col sm:flex-row items-center gap-6">
+                    <div className="relative flex items-center justify-center shrink-0">
+                      <svg className="w-36 h-36 -rotate-90 transform">
+                        <circle cx="72" cy="72" r={ringRadius} stroke="#27272A" strokeWidth="11" fill="transparent" />
+                        <circle
+                          cx="72" cy="72" r={ringRadius} stroke="#FAFAFA" strokeWidth="11"
+                          strokeDasharray={ringCircumference} strokeDashoffset={ringOffset}
+                          strokeLinecap="round" fill="transparent"
+                        />
+                      </svg>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                        <span className="text-2xl font-bold">{Math.round(dailyTotals.calories)}</span>
+                        <span className="text-[11px] text-zinc-400">/ {goals.calories} kcal</span>
+                      </div>
+                    </div>
+
+                    <div className="w-full space-y-3">
+                      {[
+                        { l: 'Protein', v: dailyTotals.protein, g: goals.protein, c: 'bg-blue-500', t: 'text-blue-400' },
+                        { l: 'Carbohydrates', v: dailyTotals.carbs, g: goals.carbs, c: 'bg-amber-500', t: 'text-amber-400' },
+                        { l: 'Fats', v: dailyTotals.fat, g: goals.fat, c: 'bg-pink-500', t: 'text-pink-400' },
+                        { l: 'Fiber', v: dailyTotals.fiber, g: goals.fiber, c: 'bg-violet-500', t: 'text-violet-400' },
+                      ].map((m) => (
+                        <div key={m.l} className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-zinc-300 font-medium">{m.l}</span>
+                            <span className="text-zinc-400"><strong className={m.t}>{Math.round(m.v)}g</strong> / {m.g}g</span>
+                          </div>
+                          <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                            <div className={`h-full ${m.c} rounded-full`} style={{ width: `${Math.min(100, Math.round((m.v / (m.g || 1)) * 100))}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+
+                <div className="grid grid-cols-3 gap-2.5">
+                  <button onClick={() => openTrackModal('manual')} className="bg-[#18181B] border border-[#27272A] rounded-xl p-3 flex flex-col items-center gap-1.5 text-emerald-400">
+                    <Icon name="scale" className="w-4 h-4" />
+                    <span className="text-xs font-medium text-zinc-200">Manual log</span>
+                  </button>
+                  <button onClick={() => openTrackModal('voice')} className="bg-[#18181B] border border-[#27272A] rounded-xl p-3 flex flex-col items-center gap-1.5 text-blue-400">
+                    <Icon name="mic" className="w-4 h-4" />
+                    <span className="text-xs font-medium text-zinc-200">Describe meal</span>
+                  </button>
+                  <button onClick={() => openTrackModal('photo')} className="bg-[#18181B] border border-[#27272A] rounded-xl p-3 flex flex-col items-center gap-1.5 text-violet-400">
+                    <Icon name="camera" className="w-4 h-4" />
+                    <span className="text-xs font-medium text-zinc-200">Snap photo</span>
+                  </button>
+                </div>
+
+                <section className="space-y-3">
+                  <h2 className="text-sm font-semibold text-zinc-200">Logged Meals ({todaysMeals.length})</h2>
+                  {todaysMeals.length === 0 ? (
+                    <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-8 text-center space-y-2">
+                      <p className="text-sm font-medium text-zinc-200">Ready to start tracking today</p>
+                      <p className="text-xs text-zinc-400">Tap "Track food" to log manually, describe a meal, or snap a photo.</p>
+                    </div>
+                  ) : (
+                    todaysMeals.map((meal) => {
+                      const mTotals = meal.items.reduce((a, i) => ({
+                        cal: a.cal + (Number(i.calories) || 0),
+                        p: a.p + (Number(i.protein) || 0),
+                        c: a.c + (Number(i.carbs) || 0),
+                        f: a.f + (Number(i.fat) || 0),
+                        fib: a.fib + (Number(i.fiber) || 0),
+                      }), { cal: 0, p: 0, c: 0, f: 0, fib: 0 });
+                      const isOpen = expandedMealId === meal.id;
+                      return (
+                        <div key={meal.id} className="bg-[#18181B] border border-[#27272A] rounded-2xl overflow-hidden">
+                          <div onClick={() => setExpandedMealId(isOpen ? null : meal.id)} role="button" aria-expanded={isOpen} className="p-4 flex items-center justify-between cursor-pointer">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-sm font-semibold">{meal.name}</h3>
+                                <span className="text-[11px] text-zinc-400">{meal.time}</span>
+                              </div>
+                              <div className="flex flex-wrap gap-3 mt-1 text-xs">
+                                <span className="font-medium">{Math.round(mTotals.cal)} kcal</span>
+                                <span className="text-blue-400">{mTotals.p.toFixed(1)}g P</span>
+                                <span className="text-amber-400">{mTotals.c.toFixed(1)}g C</span>
+                                <span className="text-pink-400">{mTotals.f.toFixed(1)}g F</span>
+                                <span className="text-violet-400">{mTotals.fib.toFixed(1)}g Fib</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={(e) => { e.stopPropagation(); if (window.confirm(`Delete "${meal.name}"?`)) setMeals((p) => p.filter((x) => x.id !== meal.id)); }} aria-label="Delete meal" className="p-2 text-zinc-500 hover:text-rose-400">
+                                <Icon name="trash" />
+                              </button>
+                              <Icon name={isOpen ? "chevronUp" : "chevronDown"} className="w-4 h-4 text-zinc-400" />
+                            </div>
+                          </div>
+                          {isOpen && (
+                            <div className="border-t border-zinc-800 bg-zinc-950/60 p-3 space-y-2">
+                              {meal.items.map((it) => (
+                                <div key={it.id} className="flex items-center justify-between bg-zinc-900 rounded-xl p-2.5 text-xs">
+                                  <div>
+                                    <p className="font-medium">{it.name}</p>
+                                    <p className="text-[11px] text-zinc-400">{it.calories} kcal · {it.protein}g P · {it.carbs}g C · {it.fat}g F</p>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number" inputMode="decimal"
+                                      value={it.weight_g}
+                                      onChange={(e) => updateLoggedItemWeight(meal.id, it.id, e.target.value)}
+                                      className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-center"
+                                    />
+                                    <span className="text-zinc-400">g</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </section>
+              </>
+            )}
+
+            {activeTab === 'recipes' && (
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-semibold">Recipes</h2>
+                  <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
+                    <button onClick={() => setRecipeSubTab('saved')} className={`px-3 py-1 rounded-lg ${recipeSubTab === 'saved' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Saved ({savedRecipes.length})</button>
+                    <button onClick={() => setRecipeSubTab('ai')} className={`px-3 py-1 rounded-lg ${recipeSubTab === 'ai' ? 'bg-blue-600 text-white' : 'text-zinc-400'}`}>Search AI</button>
+                  </div>
+                </div>
+
+                {aiError && !trackModalOpen && <div className="bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs p-3 rounded-xl">{aiError}</div>}
+                {recipeSubTab === 'saved' ? (
+                  savedRecipes.length === 0 ? (
+                    <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-8 text-center space-y-2">
+                      <p className="text-sm font-medium">No saved recipes yet</p>
+                      <p className="text-xs text-zinc-400">Tap "Search AI" to generate high-protein recipes, then save the ones you like.</p>
+                    </div>
+                  ) : (
+                    savedRecipes.map((r, i) => {
+                      const mult = portionMultiplier[r.name] || 1;
+                      return (
+                        <div key={i} className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                          <div className="flex justify-between">
+                            <div>
+                              <h3 className="text-sm font-semibold">{r.name}</h3>
+                              <p className="text-xs text-zinc-400">{Math.round(r.calories * mult)} kcal · {Math.round(r.protein * mult)}g P · {Math.round(r.carbs * mult)}g C · {Math.round(r.fat * mult)}g F</p>
+                            </div>
+                            <button onClick={() => { if (window.confirm(`Remove "${r.name}"?`)) setSavedRecipes((p) => p.filter((x) => x.name !== r.name)); }} aria-label="Remove recipe" className="p-2 text-zinc-400 hover:text-rose-400">
+                              <Icon name="trash" />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between pt-2 border-t border-zinc-800">
+                            <div className="flex gap-1 text-xs">
+                              {[0.5, 1, 1.5, 2].map((m) => (
+                                <button key={m} onClick={() => setPortionMultiplier({ ...portionMultiplier, [r.name]: m })} className={`px-2 py-0.5 rounded ${mult === m ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>{m}x</button>
+                              ))}
+                            </div>
+                            <button onClick={() => logRecipeToDiary(r, mult)} className="bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg">+ Log to Today</button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={recipeQuery}
+                        onChange={(e) => setRecipeQuery(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleSearchAiRecipes(); }}
+                        placeholder="e.g., High-protein chicken bulgogi bowl..."
+                        className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
+                      />
+                      <button onClick={() => handleSearchAiRecipes()} disabled={isRecipeLoading} className="bg-blue-600 text-white text-xs px-4 py-2 rounded-xl">
+                        {isRecipeLoading ? 'Generating…' : 'Generate'}
+                      </button>
+                    </div>
+                    {aiGeneratedRecipes.map((r, i) => (
+                      <div key={i} className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-2">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h3 className="text-sm font-semibold">{r.name}</h3>
+                            <p className="text-xs text-zinc-400">{r.calories} kcal · {r.protein}g P · {r.carbs}g C · {r.fat}g F</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => saveRecipe(r)} className="bg-zinc-800 text-xs px-2.5 py-1 rounded-lg">{savedRecipes.some((x) => x.name === r.name) ? 'Saved' : 'Save'}</button>
+                            <button onClick={() => logRecipeToDiary(r, 1)} className="bg-emerald-600 text-white text-xs px-2.5 py-1 rounded-lg">+ Log</button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {(r.ingredients || []).map((ing, idx) => (
+                            <span key={idx} className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-300">{ing.name}: {ing.weight_g}g</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {activeTab === 'analytics' && (
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold">Calorie intake</h2>
+                    <p className="text-xs text-zinc-400">{avgCalories ? `Average ${avgCalories} kcal on days you logged (goal ${goals.calories})` : `Goal ${goals.calories} kcal per day`}</p>
+                  </div>
+                  <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
+                    <button onClick={() => setAnalyticsRange(7)} className={`px-3 py-1 rounded-lg ${analyticsRange === 7 ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>7D</button>
+                    <button onClick={() => setAnalyticsRange(30)} className={`px-3 py-1 rounded-lg ${analyticsRange === 30 ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>30D</button>
+                  </div>
+                </div>
+
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                  <div className="h-52 flex items-end gap-1.5 pt-6 border-b border-zinc-800 relative">
+                    <div className="absolute inset-x-0 border-t border-dashed border-zinc-600 pointer-events-none" style={{ bottom: `${Math.min(100, (goals.calories / Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1)) * 100)}%` }} />
+                    {analyticsData.map((d, idx) => {
+                      const maxCal = Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1);
+                      const hPct = Math.min(100, Math.round((d.calories / maxCal) * 100));
+                      return (
+                        <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group">
+                          <div className="w-full bg-blue-500/80 hover:bg-blue-400 rounded-t transition-all" style={{ height: `${ Math.max(4, hPct) }%` }} title={`${d.date}: ${d.calories} kcal`} />
+                          {analyticsRange === 7 && <span className="text-[10px] text-zinc-400">{d.date}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {activeTab === 'settings' && (
+              <section className="space-y-4">
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-semibold">Calorie & Macro Split</h2>
+                    <button
+                      onClick={() => {
+                        const rem = Math.max(0, goals.calories - goals.protein * 4);
+                        setGoals({ ...goals, carbs: Math.round((rem * 0.65) / 4), fat: Math.round((rem * 0.35) / 9) });
+                      }}
+                      className="text-xs bg-zinc-800 text-blue-400 px-3 py-1 rounded-lg"
+                    >
+                      Auto-Balance Carbs/Fat
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { k: 'calories', l: 'Daily Calories' },
+                      { k: 'protein', l: 'Protein (g)' },
+                      { k: 'carbs', l: 'Carbs (g)' },
+                      { k: 'fat', l: 'Fats (g)' },
+                      { k: 'fiber', l: 'Fiber (g)' },
+                    ].map((f) => (
+                      <div key={f.k}>
+                        <label className="text-xs text-zinc-400">{f.l}</label>
+                        <input
+                          type="number"
+                          value={goals[f.k]}
+                          onChange={(e) => setGoals({ ...goals, [f.k]: Number(e.target.value) || 0 })}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm mt-1"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-2">
+                  <h2 className="text-sm font-semibold">Gemini API Key</h2>
+                  <p className="text-xs text-zinc-400">Stored only on this device. Used for photo, voice and recipe AI. Create the key at aistudio.google.com and restrict it there.</p>
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Paste AIzaSy... key here"
+                    autoComplete="off"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
+                  />
+                </div>
+
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-3">
+                  <h2 className="text-sm font-semibold">Back up your data</h2>
+                  <p className="text-xs text-zinc-400">Meals, recipes and goals live only on this device. The home-screen app and Safari/Chrome keep separate data, so back up before switching.</p>
+                  <div className="flex gap-2">
+                    <button onClick={exportBackup} className="flex-1 bg-zinc-800 text-xs font-medium py-2.5 rounded-xl">Download backup</button>
+                    <label className="flex-1 bg-zinc-800 text-xs font-medium py-2.5 rounded-xl text-center cursor-pointer">
+                      Restore backup
+                      <input type="file" accept="application/json,.json" onChange={importBackup} className="hidden" />
+                    </label>
+                  </div>
+                  {backupMsg && <p className="text-xs text-emerald-400">{backupMsg}</p>}
+                </div>
+
+                {!isStandalone() && (
+                  <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-2">
+                    <h2 className="text-sm font-semibold">Add to your home screen</h2>
+                    {installPrompt ? (
+                      <button onClick={async () => { installPrompt.prompt(); await installPrompt.userChoice; setInstallPrompt(null); }} className="w-full bg-blue-600 text-white text-xs font-semibold py-2.5 rounded-xl">Install MacroLens</button>
+                    ) : (
+                      <p className="text-xs text-zinc-400">iPhone: open this page in Safari, tap Share, then Add to Home Screen. Android: open the browser menu, then Install app.</p>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+          </main>
+
+          {trackModalOpen && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+              <div className="bg-[#18181B] border border-[#27272A] w-full max-w-lg rounded-t-3xl sm:rounded-2xl max-h-[90dvh] overflow-y-auto p-5 space-y-4 safe-bottom">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                  <h3 className="text-sm font-semibold">Track food</h3>
+                  <button onClick={closeTrackModal} aria-label="Close" className="p-2 -mr-2 text-zinc-400"><Icon name="x" /></button>
+                </div>
+
+                {aiError && <div className="bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs p-3 rounded-xl">{aiError}</div>}
+
+                {trackMode === 'hub' && (
+                  <div className="grid gap-3">
+                    <button onClick={() => setTrackMode('manual')} className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl text-left">
+                      <p className="text-sm font-semibold text-emerald-400">Manual log</p>
+                      <p className="text-xs text-zinc-400">Tap common staples by gram weight or enter macros directly</p>
+                    </button>
+                    <button onClick={() => setTrackMode('voice')} className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl text-left">
+                      <p className="text-sm font-semibold text-blue-400">Describe your meal</p>
+                      <p className="text-xs text-zinc-400">Dictate or type your meal and let AI calculate the macros</p>
+                    </button>
+                    <button onClick={() => setTrackMode('photo')} className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl text-left">
+                      <p className="text-sm font-semibold text-violet-400">Snap a photo</p>
+                      <p className="text-xs text-zinc-400">Snap your dish so AI estimates the gram weight & macros</p>
+                    </button>
+                  </div>
+                )}
+
+                {trackMode === 'manual' && (
+                  <div className="space-y-3">
+                    <div className="flex bg-zinc-900 rounded-xl p-1 text-xs">
+                      <button onClick={() => setManualSubMode('builder')} className={`flex-1 py-1.5 rounded-lg ${manualSubMode === 'builder' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Gram builder</button>
+                      <button onClick={() => setManualSubMode('quick')} className={`flex-1 py-1.5 rounded-lg ${manualSubMode === 'quick' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Quick macros</button>
+                    </div>
+                    <input type="text" value={manualMealName} onChange={(e) => setManualMealName(e.target.value)} placeholder="Meal name (e.g., Post-workout meal)" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                    {manualSubMode === 'quick' ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {['calories', 'protein', 'carbs', 'fat', 'fiber', 'weight_g'].map((k) => (
+                          <input key={k} type="number" inputMode="decimal" placeholder={QUICK_LABELS[k]} aria-label={QUICK_LABELS[k]} value={quickMacros[k]} onChange={(e) => setQuickMacros({ ...quickMacros, [k]: e.target.value })} className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                          {COMMON_STAPLES.map((st) => (
+                            <button key={st.name} onClick={() => addStapleToDraft(st)} className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-1 rounded-lg">+ {st.name} ({st.defaultG}g)</button>
+                          ))}
+                        </div>
+                        {draftItems.map((it) => (
+                          <div key={it.id} className="flex justify-between items-center bg-zinc-900 p-2 rounded-xl text-xs">
+                            <span>{it.name} ({it.calories} kcal)</span>
+                            <div className="flex items-center gap-1">
+                              <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-center" />
+                              <span>g</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button onClick={saveMealToLog} disabled={manualSubMode === 'builder' && draftItems.length === 0} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">Save meal</button>
+                  </div>
+                )}
+
+                {trackMode === 'voice' && (
+                  <div className="space-y-3">
+                    <div className="relative">
+                      <textarea rows={3} value={aiPromptText} onChange={(e) => setAiPromptText(e.target.value)} placeholder="Describe your meal (e.g., 200g chicken breast, 180g rice, 10g olive oil)..." className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs" />
+                      <button onClick={toggleVoiceDictation} aria-label="Dictate" className={`absolute bottom-3 right-3 p-2 rounded-full ${isListening ? 'bg-rose-600 text-white' : 'bg-zinc-800 text-zinc-300'}`}><Icon name="mic" /></button>
+                    </div>
+                    {isStandalone() && <p className="text-[11px] text-zinc-500">Dictation can be unreliable in the home-screen app. If the mic fails, use your keyboard's microphone.</p>}
+                    <button onClick={() => handleAiAnalyzeMeal('voice')} disabled={isAiLoading || !aiPromptText.trim()} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
+                      {isAiLoading ? 'Calculating…' : 'Calculate macros'}
+                    </button>
+                  </div>
+                )}
+
+                {trackMode === 'photo' && (
+                  <div className="space-y-3">
+                    <label className="flex flex-col items-center justify-center border-2 border-dashed border-zinc-700 rounded-2xl p-6 cursor-pointer bg-zinc-900/50">
+                      {photoBase64 ? <img src={photoBase64} className="max-h-44 rounded-xl object-cover" /> : <span className="text-xs text-zinc-300">Tap to take or choose a photo</span>}
+                      <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+                    </label>
+                    <input type="text" value={photoHint} onChange={(e) => setPhotoHint(e.target.value)} placeholder="Optional hint (e.g., cooked in 10g olive oil)" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                    <button onClick={() => handleAiAnalyzeMeal('photo')} disabled={isAiLoading || !photoBase64} className="w-full bg-violet-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
+                      {isAiLoading ? 'Estimating…' : 'Estimate weight and macros'}
+                    </button>
+                  </div>
+                )}
+
+                {trackMode === 'review' && (
+                  <div className="space-y-3">
+                    <input type="text" value={manualMealName} onChange={(e) => setManualMealName(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-semibold" />
+                    {draftItems.map((it) => (
+                      <div key={it.id} className="flex justify-between items-center bg-zinc-900 p-2.5 rounded-xl text-xs">
+                        <div>
+                          <p className="font-medium">{it.name}</p>
+                          <p className="text-[11px] text-zinc-400">{it.calories} kcal · {it.protein}g P · {it.carbs}g C · {it.fat}g F</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center" />
+                          <span>g</span>
+                        </div>
+                      </div>
+                    ))}
+                    <button onClick={saveMealToLog} className="w-full bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl">Save meal</button>
+                    <button onClick={() => setTrackMode('hub')} className="w-full text-xs text-zinc-400 py-2">Start over</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#09090B]/95 backdrop-blur-md border-t border-zinc-800 px-4 pt-2 pb-2 safe-bottom">
+            <div className="max-w-xl mx-auto grid grid-cols-4 gap-2">
+              {[
+                { id: 'dashboard', label: 'Daily', icon: 'utensils' },
+                { id: 'recipes', label: 'Recipes', icon: 'book' },
+                { id: 'analytics', label: 'Analytics', icon: 'chart' },
+                { id: 'settings', label: 'Goals', icon: 'settings' },
+              ].map((t) => (
+                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex flex-col items-center py-1.5 rounded-xl ${activeTab === t.id ? 'text-blue-400' : 'text-zinc-400'}`}>
+                  <Icon name={t.icon} className="w-4 h-4" />
+                  <span className="text-[11px] mt-1 font-medium">{t.label}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>
