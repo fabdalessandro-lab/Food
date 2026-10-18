@@ -1,5 +1,5 @@
 // Bump VERSION whenever you redeploy so phones pick up the new files.
-const VERSION = 'macrolens-v4';
+const VERSION = 'macrolens-v5';
 const APP_SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 const CDN_HOSTS = ['cdn.tailwindcss.com', 'unpkg.com'];
 

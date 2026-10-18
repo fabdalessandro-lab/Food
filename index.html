@@ -195,6 +195,58 @@
       }
     }
 
+    const shiftDate = (str, delta) => {
+      const [y, m, d] = str.split('-').map(Number);
+      return toDateStr(new Date(y, m - 1, d + delta));
+    };
+    const formatDay = (str) => {
+      const [y, m, d] = str.split('-').map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' });
+    };
+
+    // Attach photos for the AI: take one with the camera or pick from the library (up to `max`)
+    const PhotoAttach = ({ images, onChange, onError, max = 4 }) => {
+      const addFiles = async (e) => {
+        const files = Array.from(e.target.files || []).slice(0, Math.max(0, max - images.length));
+        e.target.value = '';
+        if (files.length === 0) return;
+        try {
+          const added = [];
+          for (const f of files) added.push(await downscaleImage(f));
+          onChange([...images, ...added]);
+        } catch (err) {
+          if (onError) onError(err.message);
+        }
+      };
+      const full = images.length >= max;
+      const btn = `flex-1 flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl py-2.5 text-xs font-medium text-zinc-200 cursor-pointer ${full ? 'opacity-40 pointer-events-none' : ''}`;
+      return (
+        <div className="space-y-2">
+          {images.length > 0 && (
+            <div className="flex gap-2 flex-wrap">
+              {images.map((src, i) => (
+                <div key={i} className="relative">
+                  <img src={src} alt={`Attached photo ${i + 1}`} className="w-16 h-16 object-cover rounded-lg border border-zinc-700" />
+                  <button onClick={() => onChange(images.filter((_, j) => j !== i))} aria-label="Remove photo" className="absolute -top-1.5 -right-1.5 bg-zinc-800 border border-zinc-600 rounded-full p-0.5"><Icon name="x" className="w-3 h-3" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <label className={btn}>
+              <Icon name="camera" /> Take photo
+              <input type="file" accept="image/*" capture="environment" onChange={addFiles} className="hidden" />
+            </label>
+            <label className={btn}>
+              <Icon name="plus" /> Upload
+              <input type="file" accept="image/*" multiple onChange={addFiles} className="hidden" />
+            </label>
+          </div>
+          {full && <p className="text-[11px] text-zinc-500">Maximum of {max} photos.</p>}
+        </div>
+      );
+    };
+
     const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -246,8 +298,9 @@
       const [draftItems, setDraftItems] = useState([]);
 
       const [aiPromptText, setAiPromptText] = useState('');
-      const [photoBase64, setPhotoBase64] = useState(null);
-      const [photoMimeType, setPhotoMimeType] = useState('image/jpeg');
+      const [aiPhotos, setAiPhotos] = useState([]);
+      const [recipePhotos, setRecipePhotos] = useState([]);
+      const [foodPhotos, setFoodPhotos] = useState([]);
       const [photoHint, setPhotoHint] = useState('');
       const [isAiLoading, setIsAiLoading] = useState(false);
       const [aiError, setAiError] = useState('');
@@ -267,21 +320,17 @@
       const [aiGeneratedRecipes, setAiGeneratedRecipes] = useState([]);
       const [isRecipeLoading, setIsRecipeLoading] = useState(false);
       const [portionMultiplier, setPortionMultiplier] = useState({});
-      const [analyticsRange, setAnalyticsRange] = useState(7);
+      const [analyticsView, setAnalyticsView] = useState('week');
+      const analyticsRange = analyticsView === 'month' ? 30 : 7;
 
-      const callGeminiJson = async (prompt, imageBase64 = null, mimeType = 'image/jpeg') => {
+      const callGeminiJson = async (prompt, images = []) => {
         if (!apiKey.trim()) {
           throw new Error('Please paste your free Gemini API Key in the Goals/Settings tab first.');
         }
         const parts = [{ text: prompt }];
-        if (imageBase64) {
-          parts.push({
-            inlineData: {
-              mimeType,
-              data: imageBase64.split(',')[1] || imageBase64
-            }
-          });
-        }
+        images.forEach((img) => {
+          parts.push({ inlineData: { mimeType: 'image/jpeg', data: img.split(',')[1] || img } });
+        });
         let res;
         try {
           res = await fetch(
@@ -335,31 +384,17 @@
         rec.start();
       };
 
-      const handlePhotoUpload = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        setAiError('');
-        try {
-          setPhotoBase64(await downscaleImage(file));
-          setPhotoMimeType('image/jpeg');
-        } catch (err) {
-          setAiError(err.message);
-        }
-        e.target.value = '';
-      };
-
       const handleAiAnalyzeMeal = async (mode) => {
         setAiError('');
         setIsAiLoading(true);
         try {
-          const prompt = mode === 'photo'
-            ? `You are a sports nutritionist. Analyze this food photo. ${photoHint ? `Hint: "${photoHint}".` : ''}
-               Identify each ingredient, estimate its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g). If the hint states nutrition values for a product, use those exact numbers.
-               Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`
-            : `Parse this meal into exact ingredients with gram weights and macros: "${aiPromptText}". If the user states nutrition values for a product (for example per 100g), use those exact numbers scaled to the amount eaten instead of estimating.
+          const text = (mode === 'photo' ? photoHint : aiPromptText).trim();
+          const hasPhotos = aiPhotos.length > 0;
+          const prompt = `You are a sports nutritionist.${hasPhotos ? ' Look at the attached photo(s): they may show a meal, food packaging or a nutrition label.' : ''}${text ? ` The user says: "${text}".` : ''}
+               Identify each ingredient, give its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g) for that weight. If the text or a nutrition label states values for a product (for example per 100g), use those exact numbers scaled to the amount eaten instead of estimating. Estimate weights only when none are given.
                Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
 
-          const result = await callGeminiJson(prompt, mode === 'photo' ? photoBase64 : null, photoMimeType);
+          const result = await callGeminiJson(prompt, aiPhotos);
           setManualMealName(result.meal_name || 'Logged Meal');
           setDraftItems((result.items || []).map((it, idx) => {
             const w = Number(it.weight_g) || 100;
@@ -464,7 +499,7 @@
         setManualMealName('');
         setDraftItems([]);
         setAiPromptText('');
-        setPhotoBase64(null);
+        setAiPhotos([]);
         setPhotoHint('');
         setQuickMacros({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
         setAiError('');
@@ -494,13 +529,13 @@
 
       const handleSearchAiRecipes = async (customQ) => {
         const q = customQ || recipeQuery;
-        if (!q.trim()) return;
+        if (!q.trim() && recipePhotos.length === 0) return;
         setIsRecipeLoading(true);
         setAiError('');
         try {
-          const prompt = `Generate 3 high-protein recipes matching: "${q}". Include exact gram weights for every ingredient.
+          const prompt = `Generate 3 high-protein recipes${q.trim() ? ` matching: "${q}"` : ''}.${recipePhotos.length ? ' Base them on the attached photo(s): use the ingredients you can see, or recreate the dish shown.' : ''} Include exact gram weights for every ingredient.
           Return strictly JSON: { "recipes": [{ "name": "String", "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number, "ingredients": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }] }`;
-          const res = await callGeminiJson(prompt);
+          const res = await callGeminiJson(prompt, recipePhotos);
           setAiGeneratedRecipes(res.recipes || []);
         } catch (err) {
           setAiError(err.message);
@@ -596,7 +631,7 @@
         e.target.value = '';
       };
       const openFoodEditor = (food) => {
-        setFoodError(''); setFoodAiText(''); setFoodManual(EMPTY_INGREDIENT);
+        setFoodError(''); setFoodAiText(''); setFoodPhotos([]); setFoodManual(EMPTY_INGREDIENT);
         setFoodDraft(food
           ? { ...JSON.parse(JSON.stringify(food)), servings: String(food.servings), totalWeight: food.totalWeight ? String(food.totalWeight) : '' }
           : { id: null, name: '', servings: '1', unitLabel: 'serving', totalWeight: '', ingredients: [] });
@@ -611,16 +646,17 @@
       const removeFoodIngredient = (id) => setFoodDraft((d) => ({ ...d, ingredients: d.ingredients.filter((i) => i.id !== id) }));
 
       const handleFoodAi = async () => {
-        if (!foodAiText.trim()) return;
+        if (!foodAiText.trim() && foodPhotos.length === 0) return;
         setFoodError(''); setFoodLoading(true);
         try {
-          const prompt = `Parse these recipe ingredients into items with gram weights and macros for exactly the amounts given: "${foodAiText}". Use the raw, uncooked state unless a cooked state is stated. If the user states nutrition values for a product (for example per 100g), use those exact numbers scaled to the amount given instead of estimating.
+          const prompt = `Parse these recipe ingredients into items with gram weights and macros for exactly the amounts given${foodAiText.trim() ? `: "${foodAiText}"` : ''}.${foodPhotos.length ? ' Use the attached photo(s), such as an ingredient list, nutrition labels or the dish itself, to identify ingredients and amounts.' : ''} Use the raw, uncooked state unless a cooked state is stated. If the user states nutrition values for a product (for example per 100g), use those exact numbers scaled to the amount given instead of estimating.
           Return strictly JSON: { "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
-          const res = await callGeminiJson(prompt);
+          const res = await callGeminiJson(prompt, foodPhotos);
           const items = (res.items || []).map(makeItem);
           if (items.length === 0) throw new Error('No ingredients found. List each one with a weight, for example: 500g flour, 325g water.');
           setFoodDraft((d) => ({ ...d, ingredients: [...d.ingredients, ...items] }));
           setFoodAiText('');
+          setFoodPhotos([]);
         } catch (err) {
           setFoodError(err.message);
         } finally {
@@ -935,10 +971,12 @@
                         placeholder="e.g., High-protein chicken bulgogi bowl..."
                         className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
                       />
-                      <button onClick={() => handleSearchAiRecipes()} disabled={isRecipeLoading} className="bg-blue-600 text-white text-xs px-4 py-2 rounded-xl">
+                      <button onClick={() => handleSearchAiRecipes()} disabled={isRecipeLoading || (!recipeQuery.trim() && recipePhotos.length === 0)} className="bg-blue-600 disabled:opacity-40 text-white text-xs px-4 py-2 rounded-xl">
                         {isRecipeLoading ? 'Generating…' : 'Generate'}
                       </button>
                     </div>
+                    <PhotoAttach images={recipePhotos} onChange={setRecipePhotos} onError={setAiError} />
+                    <p className="text-[11px] text-zinc-500 -mt-1">Add photos of what is in your fridge, a dish you want to recreate, or a recipe page.</p>
                     {aiGeneratedRecipes.map((r, i) => (
                       <div key={i} className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-2">
                         <div className="flex justify-between items-start">
@@ -965,32 +1003,104 @@
 
             {activeTab === 'analytics' && (
               <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold">Calorie intake</h2>
-                    <p className="text-xs text-zinc-400">{avgCalories ? `Average ${avgCalories} kcal on days you logged (goal ${goals.calories})` : `Goal ${goals.calories} kcal per day`}</p>
-                  </div>
-                  <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
-                    <button onClick={() => setAnalyticsRange(7)} className={`px-3 py-1 rounded-lg ${analyticsRange === 7 ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>7D</button>
-                    <button onClick={() => setAnalyticsRange(30)} className={`px-3 py-1 rounded-lg ${analyticsRange === 30 ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>30D</button>
-                  </div>
+                <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
+                  {[['day', 'Daily'], ['week', 'Weekly'], ['month', 'Monthly']].map(([id, label]) => (
+                    <button key={id} onClick={() => setAnalyticsView(id)} className={`flex-1 py-1.5 rounded-lg ${analyticsView === id ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>{label}</button>
+                  ))}
                 </div>
 
-                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
-                  <div className="h-52 flex items-end gap-1.5 pt-6 border-b border-zinc-800 relative">
-                    <div className="absolute inset-x-0 border-t border-dashed border-zinc-600 pointer-events-none" style={{ bottom: `${Math.min(100, (goals.calories / Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1)) * 100)}%` }} />
-                    {analyticsData.map((d, idx) => {
-                      const maxCal = Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1);
-                      const hPct = Math.min(100, Math.round((d.calories / maxCal) * 100));
-                      return (
-                        <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group">
-                          <div className="w-full bg-blue-500/80 hover:bg-blue-400 rounded-t transition-all" style={{ height: `${ Math.max(4, hPct) }%` }} title={`${d.date}: ${d.calories} kcal`} />
-                          {analyticsRange === 7 && <span className="text-[10px] text-zinc-400">{d.date}</span>}
+                {analyticsView === 'day' ? (() => {
+                  const macroKcal = { protein: dailyTotals.protein * 4, carbs: dailyTotals.carbs * 4, fat: dailyTotals.fat * 9 };
+                  const macroSum = macroKcal.protein + macroKcal.carbs + macroKcal.fat;
+                  const pct = (v) => macroSum > 0 ? Math.round((v / macroSum) * 100) : 0;
+                  const goalPct = Math.min(100, Math.round((dailyTotals.calories / (goals.calories || 1)) * 100));
+                  const remaining = Math.round(goals.calories - dailyTotals.calories);
+                  const mealRows = todaysMeals.map((m) => ({ m, cal: Math.round(m.items.reduce((a, it) => a + (Number(it.calories) || 0), 0)) }));
+                  const maxMeal = Math.max(1, ...mealRows.map((r) => r.cal));
+                  const isToday = selectedDate >= getTodayStr();
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <button onClick={() => setSelectedDate(shiftDate(selectedDate, -1))} aria-label="Previous day" className="px-3 py-2 text-lg text-zinc-300">‹</button>
+                        <p className="text-sm font-semibold">{formatDay(selectedDate)}</p>
+                        <button onClick={() => setSelectedDate(shiftDate(selectedDate, 1))} disabled={isToday} aria-label="Next day" className="px-3 py-2 text-lg text-zinc-300 disabled:opacity-30">›</button>
+                      </div>
+
+                      <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-2">
+                        <div className="flex items-end justify-between">
+                          <p className="text-2xl font-bold">{Math.round(dailyTotals.calories)} <span className="text-xs font-normal text-zinc-400">of {goals.calories} kcal</span></p>
+                          <p className={`text-xs ${remaining < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{remaining >= 0 ? `${remaining} kcal left` : `${-remaining} kcal over`}</p>
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                        <div className="h-2 bg-zinc-800 rounded-full overflow-hidden"><div className={`h-full rounded-full ${remaining < 0 ? 'bg-rose-500' : 'bg-blue-500'}`} style={{ width: `${goalPct}%` }} /></div>
+                      </div>
+
+                      <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                        <p className="text-xs font-semibold">Macros vs goal</p>
+                        {[
+                          { l: 'Protein', v: dailyTotals.protein, g: goals.protein, c: 'bg-blue-500' },
+                          { l: 'Carbs', v: dailyTotals.carbs, g: goals.carbs, c: 'bg-amber-500' },
+                          { l: 'Fat', v: dailyTotals.fat, g: goals.fat, c: 'bg-pink-500' },
+                          { l: 'Fiber', v: dailyTotals.fiber, g: goals.fiber, c: 'bg-violet-500' },
+                        ].map((r) => (
+                          <div key={r.l} className="space-y-1">
+                            <div className="flex justify-between text-xs"><span className="text-zinc-300">{r.l}</span><span className="text-zinc-400">{r.v.toFixed(0)} / {r.g} g</span></div>
+                            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div className={`h-full ${r.c}`} style={{ width: `${Math.min(100, Math.round((r.v / (r.g || 1)) * 100))}%` }} /></div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-2">
+                        <p className="text-xs font-semibold">Where your calories came from</p>
+                        {macroSum > 0 ? (
+                          <>
+                            <div className="flex h-3 rounded-full overflow-hidden">
+                              <div className="bg-blue-500" style={{ width: `${pct(macroKcal.protein)}%` }} />
+                              <div className="bg-amber-500" style={{ width: `${pct(macroKcal.carbs)}%` }} />
+                              <div className="bg-pink-500" style={{ width: `${pct(macroKcal.fat)}%` }} />
+                            </div>
+                            <div className="flex justify-between text-[11px] text-zinc-400">
+                              <span><span className="text-blue-400">●</span> Protein {pct(macroKcal.protein)}%</span>
+                              <span><span className="text-amber-400">●</span> Carbs {pct(macroKcal.carbs)}%</span>
+                              <span><span className="text-pink-400">●</span> Fat {pct(macroKcal.fat)}%</span>
+                            </div>
+                          </>
+                        ) : <p className="text-xs text-zinc-500">Nothing logged yet.</p>}
+                      </div>
+
+                      <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                        <p className="text-xs font-semibold">Meals</p>
+                        {mealRows.length === 0 ? <p className="text-xs text-zinc-500">Nothing logged for this day.</p> : mealRows.slice().reverse().map(({ m, cal }) => (
+                          <div key={m.id} className="space-y-1">
+                            <div className="flex justify-between text-xs gap-2"><span className="truncate">{m.name} <span className="text-zinc-500">{m.time}</span></span><span className="text-zinc-300 shrink-0">{cal} kcal</span></div>
+                            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(3, Math.round((cal / maxMeal) * 100))}%` }} /></div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <>
+                    <div>
+                      <h2 className="text-base font-semibold">{analyticsView === 'week' ? 'Last 7 days' : 'Last 30 days'}</h2>
+                      <p className="text-xs text-zinc-400">{avgCalories ? `Average ${avgCalories} kcal on days you logged (goal ${goals.calories})` : `Goal ${goals.calories} kcal per day`}</p>
+                    </div>
+                    <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                      <div className="h-52 flex items-end gap-1.5 pt-6 border-b border-zinc-800 relative">
+                        <div className="absolute inset-x-0 border-t border-dashed border-zinc-600 pointer-events-none" style={{ bottom: `${Math.min(100, (goals.calories / Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1)) * 100)}%` }} />
+                        {analyticsData.map((d, idx) => {
+                          const maxCal = Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1);
+                          const hPct = Math.min(100, Math.round((d.calories / maxCal) * 100));
+                          return (
+                            <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group">
+                              <div className="w-full bg-blue-500/80 hover:bg-blue-400 rounded-t transition-all" style={{ height: `${Math.max(4, hPct)}%` }} title={`${d.date}: ${d.calories} kcal`} />
+                              {analyticsRange === 7 && <span className="text-[10px] text-zinc-400">{d.date}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
               </section>
             )}
 
@@ -1169,7 +1279,9 @@
                       <button onClick={toggleVoiceDictation} aria-label="Dictate" className={`absolute bottom-3 right-3 p-2 rounded-full ${isListening ? 'bg-rose-600 text-white' : 'bg-zinc-800 text-zinc-300'}`}><Icon name="mic" /></button>
                     </div>
                     {isStandalone() && <p className="text-[11px] text-zinc-500">Dictation can be unreliable in the home-screen app. If the mic fails, use your keyboard's microphone.</p>}
-                    <button onClick={() => handleAiAnalyzeMeal('voice')} disabled={isAiLoading || !aiPromptText.trim()} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
+                    <PhotoAttach images={aiPhotos} onChange={setAiPhotos} onError={setAiError} />
+                    <p className="text-[11px] text-zinc-500 -mt-1">Optional: add photos of the meal, packaging or a nutrition label.</p>
+                    <button onClick={() => handleAiAnalyzeMeal('voice')} disabled={isAiLoading || (!aiPromptText.trim() && aiPhotos.length === 0)} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
                       {isAiLoading ? 'Calculating…' : 'Calculate macros'}
                     </button>
                   </div>
@@ -1177,12 +1289,9 @@
 
                 {trackMode === 'photo' && (
                   <div className="space-y-3">
-                    <label className="flex flex-col items-center justify-center border-2 border-dashed border-zinc-700 rounded-2xl p-6 cursor-pointer bg-zinc-900/50">
-                      {photoBase64 ? <img src={photoBase64} className="max-h-44 rounded-xl object-cover" /> : <span className="text-xs text-zinc-300">Tap to take or choose a photo</span>}
-                      <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
-                    </label>
+                    <PhotoAttach images={aiPhotos} onChange={setAiPhotos} onError={setAiError} />
                     <input type="text" value={photoHint} onChange={(e) => setPhotoHint(e.target.value)} placeholder="Optional hint (e.g., cooked in 10g olive oil)" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
-                    <button onClick={() => handleAiAnalyzeMeal('photo')} disabled={isAiLoading || !photoBase64} className="w-full bg-violet-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
+                    <button onClick={() => handleAiAnalyzeMeal('photo')} disabled={isAiLoading || aiPhotos.length === 0} className="w-full bg-violet-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">
                       {isAiLoading ? 'Estimating…' : 'Estimate weight and macros'}
                     </button>
                   </div>
@@ -1242,7 +1351,8 @@
                 <div className="space-y-2">
                   <p className="text-xs font-semibold">Ingredients</p>
                   <textarea rows={3} value={foodAiText} onChange={(e) => setFoodAiText(e.target.value)} placeholder="Describe them with weights, e.g. 500g flour, 325g water, 10g salt, 3g yeast, 20g olive oil" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs" />
-                  <button onClick={handleFoodAi} disabled={foodLoading || !foodAiText.trim()} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">{foodLoading ? 'Calculating…' : 'Calculate ingredients with AI'}</button>
+                  <PhotoAttach images={foodPhotos} onChange={setFoodPhotos} onError={setFoodError} />
+                  <button onClick={handleFoodAi} disabled={foodLoading || (!foodAiText.trim() && foodPhotos.length === 0)} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">{foodLoading ? 'Calculating…' : 'Calculate ingredients with AI'}</button>
 
                   <p className="text-[11px] text-zinc-400 pt-1">Or tap a staple</p>
                   <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
