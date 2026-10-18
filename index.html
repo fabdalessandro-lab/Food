@@ -123,6 +123,78 @@
       img.src = url;
     });
 
+    // ---- item / food helpers ----
+    const scaleItem = (it, w) => {
+      const r = it.base_weight_g > 0 ? w / it.base_weight_g : 1;
+      return {
+        ...it,
+        weight_g: w,
+        calories: Math.round((it.base_calories || 0) * r),
+        protein: Number(((it.base_protein || 0) * r).toFixed(1)),
+        carbs: Number(((it.base_carbs || 0) * r).toFixed(1)),
+        fat: Number(((it.base_fat || 0) * r).toFixed(1)),
+        fiber: Number(((it.base_fiber || 0) * r).toFixed(1)),
+      };
+    };
+    // Ingredient with macros given for the stated weight
+    const makeItem = (o) => {
+      const w = Number(o.weight_g) > 0 ? Number(o.weight_g) : 100;
+      return scaleItem({
+        id: uid(), name: o.name || 'Ingredient', unit: 'g',
+        weight_g: w, base_weight_g: w,
+        base_calories: Number(o.calories) || 0, base_protein: Number(o.protein) || 0,
+        base_carbs: Number(o.carbs) || 0, base_fat: Number(o.fat) || 0, base_fiber: Number(o.fiber) || 0,
+      }, w);
+    };
+    const stapleToItem = (st) => scaleItem({
+      id: uid(), name: st.name, unit: 'g', weight_g: st.defaultG, base_weight_g: 100,
+      base_calories: st.cal, base_protein: st.p, base_carbs: st.c, base_fat: st.f, base_fiber: st.fib,
+    }, st.defaultG);
+    const sumItems = (items) => items.reduce((a, i) => ({
+      calories: a.calories + (Number(i.calories) || 0),
+      protein: a.protein + (Number(i.protein) || 0),
+      carbs: a.carbs + (Number(i.carbs) || 0),
+      fat: a.fat + (Number(i.fat) || 0),
+      fiber: a.fiber + (Number(i.fiber) || 0),
+    }), { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
+    const perServing = (food) => {
+      const n = Math.max(Number(food.servings) || 1, 0.0001);
+      const t = food.totals || {};
+      return { calories: (t.calories || 0) / n, protein: (t.protein || 0) / n, carbs: (t.carbs || 0) / n, fat: (t.fat || 0) / n, fiber: (t.fiber || 0) / n };
+    };
+    // A saved food as a loggable item: by serving (default) or by grams of the finished dish
+    const foodToItem = (food, mode = 'serving', qty) => {
+      const t = food.totals || {};
+      if (mode === 'g' && food.totalWeight > 0) {
+        const n = Math.max(Number(food.servings) || 1, 0.0001);
+        return scaleItem({
+          id: uid(), name: food.name, unit: 'g', weight_g: food.totalWeight, base_weight_g: food.totalWeight,
+          base_calories: t.calories || 0, base_protein: t.protein || 0, base_carbs: t.carbs || 0, base_fat: t.fat || 0, base_fiber: t.fiber || 0,
+        }, qty != null ? qty : Math.round(food.totalWeight / n));
+      }
+      const p = perServing(food);
+      return scaleItem({
+        id: uid(), name: food.name, unit: food.unitLabel || 'serving', weight_g: 1, base_weight_g: 1,
+        base_calories: p.calories, base_protein: p.protein, base_carbs: p.carbs, base_fat: p.fat, base_fiber: p.fiber,
+      }, qty != null ? qty : 1);
+    };
+    const EMPTY_INGREDIENT = { name: '', weight_g: '', calories: '', protein: '', carbs: '', fat: '', fiber: '' };
+
+    class ErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { err: null }; }
+      static getDerivedStateFromError(err) { return { err }; }
+      render() {
+        if (!this.state.err) return this.props.children;
+        return (
+          <div className="p-6 space-y-3 text-sm">
+            <p className="font-semibold">Something went wrong.</p>
+            <p className="text-xs text-zinc-400 break-words">{String(this.state.err && this.state.err.message)}</p>
+            <button onClick={() => window.location.reload()} className="bg-blue-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl">Reload app</button>
+          </div>
+        );
+      }
+    }
+
     const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -133,7 +205,11 @@
       const [goals, setGoals] = useState(() => ({ ...DEFAULT_GOALS, ...loadJson('macrolens_goals', {}) }));
       const [meals, setMeals] = useState(() => {
         const m = loadJson('macrolens_meals', []);
-        return Array.isArray(m) ? m : [];
+        return Array.isArray(m) ? m.filter((x) => x && Array.isArray(x.items)) : [];
+      });
+      const [customFoods, setCustomFoods] = useState(() => {
+        const f = loadJson('macrolens_foods', []);
+        return Array.isArray(f) ? f.filter((x) => x && x.id && Array.isArray(x.ingredients) && x.totals) : [];
       });
       const [savedRecipes, setSavedRecipes] = useState(() => {
         const r = loadJson('macrolens_recipes', []);
@@ -149,6 +225,7 @@
       useEffect(() => { try { localStorage.setItem('macrolens_model', model); } catch (e) {} }, [model]);
 
       useEffect(() => { saveJson('macrolens_goals', goals); }, [goals]);
+      useEffect(() => { saveJson('macrolens_foods', customFoods); }, [customFoods]);
       useEffect(() => { saveJson('macrolens_meals', meals); }, [meals]);
       useEffect(() => { saveJson('macrolens_recipes', savedRecipes); }, [savedRecipes]);
       useEffect(() => { try { localStorage.setItem('macrolens_gemini_key', apiKey); } catch (e) {} }, [apiKey]);
@@ -179,6 +256,13 @@
 
       const [expandedMealId, setExpandedMealId] = useState(null);
       const [recipeSubTab, setRecipeSubTab] = useState('saved');
+      const [foodModalOpen, setFoodModalOpen] = useState(false);
+      const [foodDraft, setFoodDraft] = useState(null);
+      const [foodAiText, setFoodAiText] = useState('');
+      const [foodError, setFoodError] = useState('');
+      const [foodLoading, setFoodLoading] = useState(false);
+      const [foodManual, setFoodManual] = useState(EMPTY_INGREDIENT);
+      const [foodQty, setFoodQty] = useState({});
       const [recipeQuery, setRecipeQuery] = useState('');
       const [aiGeneratedRecipes, setAiGeneratedRecipes] = useState([]);
       const [isRecipeLoading, setIsRecipeLoading] = useState(false);
@@ -270,9 +354,9 @@
         try {
           const prompt = mode === 'photo'
             ? `You are a sports nutritionist. Analyze this food photo. ${photoHint ? `Hint: "${photoHint}".` : ''}
-               Identify each ingredient, estimate its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g).
+               Identify each ingredient, estimate its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g). If the hint states nutrition values for a product, use those exact numbers.
                Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`
-            : `Parse this meal into exact ingredients with gram weights and macros: "${aiPromptText}".
+            : `Parse this meal into exact ingredients with gram weights and macros: "${aiPromptText}". If the user states nutrition values for a product (for example per 100g), use those exact numbers scaled to the amount eaten instead of estimating.
                Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
 
           const result = await callGeminiJson(prompt, mode === 'photo' ? photoBase64 : null, photoMimeType);
@@ -482,7 +566,7 @@
       const avgCalories = loggedDays.length ? Math.round(loggedDays.reduce((a, d) => a + d.calories, 0) / loggedDays.length) : 0;
 
       const exportBackup = () => {
-        const blob = new Blob([JSON.stringify({ app: 'macrolens', version: 1, goals, meals, recipes: savedRecipes }, null, 2)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify({ app: 'macrolens', version: 2, goals, meals, recipes: savedRecipes, foods: customFoods }, null, 2)], { type: 'application/json' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `macrolens-backup-${getTodayStr()}.json`;
@@ -500,8 +584,9 @@
             if (d.app !== 'macrolens') throw new Error('bad');
             if (!window.confirm('Replace the data on this device with this backup?')) return;
             setGoals({ ...DEFAULT_GOALS, ...(d.goals || {}) });
-            setMeals(Array.isArray(d.meals) ? d.meals : []);
+            setMeals(Array.isArray(d.meals) ? d.meals.filter((x) => x && Array.isArray(x.items)) : []);
             setSavedRecipes(Array.isArray(d.recipes) ? d.recipes : []);
+            setCustomFoods(Array.isArray(d.foods) ? d.foods : []);
             setBackupMsg('Backup restored.');
           } catch (err) {
             setBackupMsg('That file is not a MacroLens backup.');
@@ -510,6 +595,81 @@
         reader.readAsText(file);
         e.target.value = '';
       };
+      const openFoodEditor = (food) => {
+        setFoodError(''); setFoodAiText(''); setFoodManual(EMPTY_INGREDIENT);
+        setFoodDraft(food
+          ? { ...JSON.parse(JSON.stringify(food)), servings: String(food.servings), totalWeight: food.totalWeight ? String(food.totalWeight) : '' }
+          : { id: null, name: '', servings: '1', unitLabel: 'serving', totalWeight: '', ingredients: [] });
+        setFoodModalOpen(true);
+      };
+      const closeFoodEditor = () => { setFoodModalOpen(false); setFoodDraft(null); setFoodError(''); };
+      const patchFood = (patch) => setFoodDraft((d) => ({ ...d, ...patch }));
+      const addFoodIngredient = (item) => setFoodDraft((d) => ({ ...d, ingredients: [...d.ingredients, item] }));
+      const updateFoodIngredientWeight = (id, w) => setFoodDraft((d) => ({
+        ...d, ingredients: d.ingredients.map((i) => i.id === id ? scaleItem(i, Math.max(0, Number(w) || 0)) : i)
+      }));
+      const removeFoodIngredient = (id) => setFoodDraft((d) => ({ ...d, ingredients: d.ingredients.filter((i) => i.id !== id) }));
+
+      const handleFoodAi = async () => {
+        if (!foodAiText.trim()) return;
+        setFoodError(''); setFoodLoading(true);
+        try {
+          const prompt = `Parse these recipe ingredients into items with gram weights and macros for exactly the amounts given: "${foodAiText}". Use the raw, uncooked state unless a cooked state is stated. If the user states nutrition values for a product (for example per 100g), use those exact numbers scaled to the amount given instead of estimating.
+          Return strictly JSON: { "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
+          const res = await callGeminiJson(prompt);
+          const items = (res.items || []).map(makeItem);
+          if (items.length === 0) throw new Error('No ingredients found. List each one with a weight, for example: 500g flour, 325g water.');
+          setFoodDraft((d) => ({ ...d, ingredients: [...d.ingredients, ...items] }));
+          setFoodAiText('');
+        } catch (err) {
+          setFoodError(err.message);
+        } finally {
+          setFoodLoading(false);
+        }
+      };
+
+      const addManualIngredient = () => {
+        const m = foodManual;
+        if (!m.name.trim()) { setFoodError('Name the ingredient.'); return; }
+        if (!(Number(m.weight_g) > 0)) { setFoodError('Enter the amount in grams.'); return; }
+        setFoodError('');
+        addFoodIngredient(makeItem({ ...m, name: m.name.trim() }));
+        setFoodManual(EMPTY_INGREDIENT);
+      };
+
+      const saveFood = () => {
+        const d = foodDraft;
+        const name = d.name.trim();
+        const servings = Number(d.servings);
+        if (!name) { setFoodError('Give the food a name.'); return; }
+        if (!(servings > 0)) { setFoodError('Enter how many servings this makes.'); return; }
+        if (d.ingredients.length === 0) { setFoodError('Add at least one ingredient.'); return; }
+        if (customFoods.some((f) => f.id !== d.id && f.name.trim().toLowerCase() === name.toLowerCase())) { setFoodError('You already have a food with that name.'); return; }
+        const food = {
+          id: d.id || uid(), name, servings,
+          unitLabel: (d.unitLabel || '').trim() || 'serving',
+          totalWeight: Number(d.totalWeight) > 0 ? Number(d.totalWeight) : 0,
+          ingredients: d.ingredients,
+          totals: sumItems(d.ingredients),
+        };
+        setCustomFoods((p) => d.id ? p.map((f) => f.id === food.id ? food : f) : [...p, food]);
+        closeFoodEditor();
+        setRecipeSubTab('foods');
+      };
+
+      const logCustomFood = (food, qty) => {
+        const q = Number(qty);
+        if (!(q > 0)) return;
+        setMeals((p) => [{
+          id: uid(),
+          date: selectedDate,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          name: `${food.name}${q !== 1 ? ` (${q} ${food.unitLabel || 'serving'})` : ''}`,
+          items: [foodToItem(food, 'serving', q)]
+        }, ...p]);
+        setActiveTab('dashboard');
+      };
+
       const saveRecipe = (r) => setSavedRecipes((p) => p.some((x) => x.name === r.name) ? p : [...p, r]);
 
       const calPct = Math.min(100, Math.round((dailyTotals.calories / (goals.calories || 1)) * 100));
@@ -534,7 +694,7 @@
                 <input
                   type="date"
                   value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
+                  onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
                   className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 rounded-lg px-2.5 py-1.5"
                 />
                 <button
@@ -666,7 +826,7 @@
                                       onChange={(e) => updateLoggedItemWeight(meal.id, it.id, e.target.value)}
                                       className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-center"
                                     />
-                                    <span className="text-zinc-400">g</span>
+                                    <span className="text-zinc-400">{it.unit || 'g'}</span>
                                   </div>
                                 </div>
                               ))}
@@ -682,16 +842,57 @@
 
             {activeTab === 'recipes' && (
               <section className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="space-y-3">
                   <h2 className="text-base font-semibold">Recipes</h2>
                   <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
-                    <button onClick={() => setRecipeSubTab('saved')} className={`px-3 py-1 rounded-lg ${recipeSubTab === 'saved' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Saved ({savedRecipes.length})</button>
-                    <button onClick={() => setRecipeSubTab('ai')} className={`px-3 py-1 rounded-lg ${recipeSubTab === 'ai' ? 'bg-blue-600 text-white' : 'text-zinc-400'}`}>Search AI</button>
+                    {[['saved', `Saved (${savedRecipes.length})`], ['foods', `My foods (${customFoods.length})`], ['ai', 'Search AI']].map(([id, label]) => (
+                      <button key={id} onClick={() => setRecipeSubTab(id)} className={`flex-1 px-2 py-1.5 rounded-lg ${recipeSubTab === id ? (id === 'ai' ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-white') : 'text-zinc-400'}`}>{label}</button>
+                    ))}
                   </div>
                 </div>
 
                 {aiError && !trackModalOpen && <div className="bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs p-3 rounded-xl">{aiError}</div>}
-                {recipeSubTab === 'saved' ? (
+                {recipeSubTab === 'foods' ? (
+                  <div className="space-y-3">
+                    <button onClick={() => openFoodEditor(null)} className="w-full bg-blue-600 text-white text-xs font-semibold py-3 rounded-xl">Create food</button>
+                    {customFoods.length === 0 ? (
+                      <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-8 text-center space-y-2">
+                        <p className="text-sm font-medium">No foods yet</p>
+                        <p className="text-xs text-zinc-400">Save a dish once, like pizza dough that makes 3 pizzas, then log one share of it whenever you eat it.</p>
+                      </div>
+                    ) : customFoods.map((f) => {
+                      const ps = perServing(f);
+                      const qty = foodQty[f.id] != null ? foodQty[f.id] : '1';
+                      return (
+                        <div key={f.id} className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                          <div className="flex justify-between items-start gap-2">
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-semibold">{f.name}</h3>
+                              <p className="text-xs text-zinc-400">Makes {f.servings} {f.unitLabel}{f.totalWeight ? ` · ${f.totalWeight}g total` : ''}</p>
+                              <p className="text-xs mt-1">Per {f.unitLabel}: <span className="font-medium">{Math.round(ps.calories)} kcal</span> · {ps.protein.toFixed(1)}g P · {ps.carbs.toFixed(1)}g C · {ps.fat.toFixed(1)}g F</p>
+                            </div>
+                            <div className="flex shrink-0">
+                              <button onClick={() => openFoodEditor(f)} className="px-2 py-1.5 text-xs text-blue-400">Edit</button>
+                              <button onClick={() => { if (window.confirm(`Delete "${f.name}"? Meals you already logged stay as they are.`)) setCustomFoods((p) => p.filter((x) => x.id !== f.id)); }} aria-label="Delete food" className="p-2 text-zinc-400 hover:text-rose-400"><Icon name="trash" /></button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {f.ingredients.map((ing) => (
+                              <span key={ing.id} className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-300">{ing.name}: {ing.weight_g}g</span>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between pt-2 border-t border-zinc-800 gap-2">
+                            <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+                              <input type="number" inputMode="decimal" value={qty} onChange={(e) => setFoodQty({ ...foodQty, [f.id]: e.target.value })} aria-label={`Quantity in ${f.unitLabel}`} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center text-zinc-100" />
+                              <span>{f.unitLabel}</span>
+                            </div>
+                            <button onClick={() => logCustomFood(f, qty)} disabled={!(Number(qty) > 0)} className="bg-emerald-600 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg">Log to today</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : recipeSubTab === 'saved' ? (
                   savedRecipes.length === 0 ? (
                     <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-8 text-center space-y-2">
                       <p className="text-sm font-medium">No saved recipes yet</p>
@@ -854,7 +1055,7 @@
 
                 <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-3">
                   <h2 className="text-sm font-semibold">Back up your data</h2>
-                  <p className="text-xs text-zinc-400">Meals, recipes and goals live only on this device. The home-screen app and Safari/Chrome keep separate data, so back up before switching.</p>
+                  <p className="text-xs text-zinc-400">Meals, recipes, your foods and goals live only on this device. The home-screen app and Safari/Chrome keep separate data, so back up before switching.</p>
                   <div className="flex gap-2">
                     <button onClick={exportBackup} className="flex-1 bg-zinc-800 text-xs font-medium py-2.5 rounded-xl">Download backup</button>
                     <label className="flex-1 bg-zinc-800 text-xs font-medium py-2.5 rounded-xl text-center cursor-pointer">
@@ -921,6 +1122,26 @@
                       </div>
                     ) : (
                       <div className="space-y-2">
+                        <p className="text-[11px] text-zinc-400">My foods</p>
+                        {customFoods.length === 0 ? (
+                          <p className="text-[11px] text-zinc-500">Create your own foods under Recipes, My foods. They will show up here.</p>
+                        ) : (
+                          <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                            {customFoods.map((f) => (
+                              <div key={f.id} className="flex items-center justify-between gap-2 bg-zinc-900 border border-zinc-800 rounded-xl p-2 text-xs">
+                                <div className="min-w-0">
+                                  <p className="font-medium truncate">{f.name}</p>
+                                  <p className="text-[11px] text-zinc-400">{Math.round(perServing(f).calories)} kcal per {f.unitLabel}</p>
+                                </div>
+                                <div className="flex gap-1 shrink-0">
+                                  <button onClick={() => setDraftItems((p) => [...p, foodToItem(f, 'serving')])} className="bg-zinc-800 px-2 py-1.5 rounded-lg">+ {f.unitLabel}</button>
+                                  {f.totalWeight > 0 && <button onClick={() => setDraftItems((p) => [...p, foodToItem(f, 'g')])} className="bg-zinc-800 px-2 py-1.5 rounded-lg">+ grams</button>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <p className="text-[11px] text-zinc-400 pt-1">Common staples</p>
                         <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
                           {COMMON_STAPLES.map((st) => (
                             <button key={st.name} onClick={() => addStapleToDraft(st)} className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-1 rounded-lg">+ {st.name} ({st.defaultG}g)</button>
@@ -931,7 +1152,7 @@
                             <span>{it.name} ({it.calories} kcal)</span>
                             <div className="flex items-center gap-1">
                               <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-center" />
-                              <span>g</span>
+                              <span>{it.unit || 'g'}</span>
                             </div>
                           </div>
                         ))}
@@ -978,7 +1199,7 @@
                         </div>
                         <div className="flex items-center gap-1">
                           <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center" />
-                          <span>g</span>
+                          <span>{it.unit || 'g'}</span>
                         </div>
                       </div>
                     ))}
@@ -986,6 +1207,90 @@
                     <button onClick={() => setTrackMode('hub')} className="w-full text-xs text-zinc-400 py-2">Start over</button>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {foodModalOpen && foodDraft && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+              <div className="bg-[#18181B] border border-[#27272A] w-full max-w-lg rounded-t-3xl sm:rounded-2xl max-h-[92dvh] overflow-y-auto p-5 space-y-4 safe-bottom">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                  <h3 className="text-sm font-semibold">{foodDraft.id ? 'Edit food' : 'Create food'}</h3>
+                  <button onClick={closeFoodEditor} aria-label="Close" className="p-2 -mr-2 text-zinc-400"><Icon name="x" /></button>
+                </div>
+
+                {foodError && <div className="bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs p-3 rounded-xl">{foodError}</div>}
+
+                <input type="text" value={foodDraft.name} onChange={(e) => patchFood({ name: e.target.value })} placeholder="Food name (e.g., Pizza dough)" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="text-[11px] text-zinc-400">Makes</label>
+                    <input type="number" inputMode="decimal" value={foodDraft.servings} onChange={(e) => patchFood({ servings: e.target.value })} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs mt-1" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-zinc-400">Called</label>
+                    <input type="text" value={foodDraft.unitLabel} onChange={(e) => patchFood({ unitLabel: e.target.value })} autoCapitalize="none" placeholder="pizza" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs mt-1" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-zinc-400">Total g (optional)</label>
+                    <input type="number" inputMode="decimal" value={foodDraft.totalWeight} onChange={(e) => patchFood({ totalWeight: e.target.value })} placeholder={String(Math.round(foodDraft.ingredients.reduce((a, i) => a + (Number(i.weight_g) || 0), 0)) || '')} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs mt-1" />
+                  </div>
+                </div>
+                <p className="text-[11px] text-zinc-500 -mt-2">Add the finished weight of the whole batch if you want to log it by grams too.</p>
+
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold">Ingredients</p>
+                  <textarea rows={3} value={foodAiText} onChange={(e) => setFoodAiText(e.target.value)} placeholder="Describe them with weights, e.g. 500g flour, 325g water, 10g salt, 3g yeast, 20g olive oil" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs" />
+                  <button onClick={handleFoodAi} disabled={foodLoading || !foodAiText.trim()} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">{foodLoading ? 'Calculating…' : 'Calculate ingredients with AI'}</button>
+
+                  <p className="text-[11px] text-zinc-400 pt-1">Or tap a staple</p>
+                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                    {COMMON_STAPLES.map((st) => (
+                      <button key={st.name} onClick={() => addFoodIngredient(stapleToItem(st))} className="text-[11px] bg-zinc-900 border border-zinc-800 px-2 py-1 rounded-lg">+ {st.name} ({st.defaultG}g)</button>
+                    ))}
+                  </div>
+
+                  <details className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3">
+                    <summary className="text-xs text-zinc-300 cursor-pointer">Enter an ingredient yourself</summary>
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <input type="text" value={foodManual.name} onChange={(e) => setFoodManual({ ...foodManual, name: e.target.value })} placeholder="Name" className="col-span-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                      {[['weight_g', 'Amount (g)'], ['calories', 'Calories (kcal)'], ['protein', 'Protein (g)'], ['carbs', 'Carbs (g)'], ['fat', 'Fat (g)'], ['fiber', 'Fiber (g)']].map(([k, label]) => (
+                        <input key={k} type="number" inputMode="decimal" value={foodManual[k]} onChange={(e) => setFoodManual({ ...foodManual, [k]: e.target.value })} placeholder={label} aria-label={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-zinc-500 mt-2">Macros are for the amount you enter, not per 100g.</p>
+                    <button onClick={addManualIngredient} className="w-full bg-zinc-800 text-xs font-medium py-2.5 rounded-xl mt-2">Add ingredient</button>
+                  </details>
+
+                  {foodDraft.ingredients.map((it) => (
+                    <div key={it.id} className="flex justify-between items-center gap-2 bg-zinc-900 p-2.5 rounded-xl text-xs">
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">{it.name}</p>
+                        <p className="text-[11px] text-zinc-400">{it.calories} kcal · {it.protein}g P · {it.carbs}g C · {it.fat}g F</p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateFoodIngredientWeight(it.id, e.target.value)} aria-label={`${it.name} grams`} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center" />
+                        <span>g</span>
+                        <button onClick={() => removeFoodIngredient(it.id)} aria-label={`Remove ${it.name}`} className="p-1.5 text-zinc-500 hover:text-rose-400"><Icon name="x" className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {foodDraft.ingredients.length > 0 && (() => {
+                  const t = sumItems(foodDraft.ingredients);
+                  const n = Number(foodDraft.servings) > 0 ? Number(foodDraft.servings) : 0;
+                  const unit = (foodDraft.unitLabel || '').trim() || 'serving';
+                  return (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs space-y-1">
+                      <p><span className="text-zinc-400">Whole batch:</span> <span className="font-medium">{Math.round(t.calories)} kcal</span> · {t.protein.toFixed(1)}g P · {t.carbs.toFixed(1)}g C · {t.fat.toFixed(1)}g F · {t.fiber.toFixed(1)}g fiber</p>
+                      {n > 0 && <p><span className="text-zinc-400">Per {unit}:</span> <span className="font-medium">{Math.round(t.calories / n)} kcal</span> · {(t.protein / n).toFixed(1)}g P · {(t.carbs / n).toFixed(1)}g C · {(t.fat / n).toFixed(1)}g F · {(t.fiber / n).toFixed(1)}g fiber</p>}
+                    </div>
+                  );
+                })()}
+
+                <button onClick={saveFood} className="w-full bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl">Save food</button>
               </div>
             </div>
           )}
@@ -998,7 +1303,7 @@
                 { id: 'analytics', label: 'Analytics', icon: 'chart' },
                 { id: 'settings', label: 'Goals', icon: 'settings' },
               ].map((t) => (
-                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex flex-col items-center py-1.5 rounded-xl ${activeTab === t.id ? 'text-blue-400' : 'text-zinc-400'}`}>
+                <button key={t.id} onClick={() => { setAiError(''); setActiveTab(t.id); }} className={`flex flex-col items-center py-1.5 rounded-xl ${activeTab === t.id ? 'text-blue-400' : 'text-zinc-400'}`}>
                   <Icon name={t.icon} className="w-4 h-4" />
                   <span className="text-[11px] mt-1 font-medium">{t.label}</span>
                 </button>
@@ -1009,7 +1314,7 @@
       );
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>);
 
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
