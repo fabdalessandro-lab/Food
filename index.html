@@ -247,6 +247,172 @@
       );
     };
 
+    // ---- barcode lookup (Open Food Facts, free, no key; values are per 100 g) ----
+    const lookupBarcode = async (code) => {
+      let res;
+      try {
+        res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,brands,nutriments,serving_quantity`);
+      } catch (e) {
+        throw new Error('No connection. Barcode lookup needs internet.');
+      }
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`Lookup failed (${res.status}). Try again in a moment.`);
+      const data = await res.json();
+      if (!data || data.status === 0 || !data.product) return null;
+      const p = data.product;
+      const n = p.nutriments || {};
+      const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+      let kcal = num(n['energy-kcal_100g']);
+      if (!kcal && n['energy_100g']) kcal = Math.round(num(n['energy_100g']) / 4.184);
+      const brand = p.brands ? String(p.brands).split(',')[0].trim() : '';
+      const name = [brand, p.product_name].filter(Boolean).join(' ') || `Product ${code}`;
+      return {
+        code, name, hasEnergy: kcal > 0, servingG: num(p.serving_quantity),
+        per100: { calories: kcal, protein: num(n.proteins_100g), carbs: num(n.carbohydrates_100g), fat: num(n.fat_100g), fiber: num(n.fiber_100g) },
+      };
+    };
+
+    const BarcodeScanner = ({ onAdd, onClose }) => {
+      const videoRef = useRef(null);
+      const streamRef = useRef(null);
+      const [status, setStatus] = useState('starting'); // starting | scanning | unsupported | loading | result | notfound | error
+      const [message, setMessage] = useState('');
+      const [manualCode, setManualCode] = useState('');
+      const [product, setProduct] = useState(null);
+      const [vals, setVals] = useState(null);
+      const [grams, setGrams] = useState('100');
+
+      const stopCamera = () => {
+        if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+      };
+
+      const doLookup = async (code) => {
+        stopCamera();
+        setStatus('loading'); setMessage('');
+        try {
+          const p = await lookupBarcode(code);
+          if (!p) { setStatus('notfound'); setMessage(`No product found for ${code}. Try the label photo under Describe meal, or enter it by hand.`); return; }
+          setProduct(p);
+          setVals({ calories: String(p.per100.calories), protein: String(p.per100.protein), carbs: String(p.per100.carbs), fat: String(p.per100.fat), fiber: String(p.per100.fiber) });
+          setGrams(String(p.servingG > 0 ? Math.round(p.servingG) : 100));
+          setStatus('result');
+        } catch (e) {
+          setStatus('error'); setMessage(e.message);
+        }
+      };
+
+      const startCamera = async () => {
+        setStatus('starting'); setMessage('');
+        if (!('BarcodeDetector' in window) || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+          setStatus('unsupported'); setMessage('This browser cannot scan barcodes. Type the number below instead.');
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          streamRef.current = stream;
+          const v = videoRef.current;
+          v.srcObject = stream;
+          await v.play();
+          setStatus('scanning');
+          const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+          const tick = async () => {
+            if (!streamRef.current) return;
+            try {
+              const codes = await detector.detect(v);
+              if (codes.length > 0 && streamRef.current) { doLookup(codes[0].rawValue); return; }
+            } catch (e) { /* video not ready yet */ }
+            setTimeout(tick, 250);
+          };
+          tick();
+        } catch (e) {
+          setStatus('unsupported');
+          setMessage('Camera access was blocked. Allow the camera for this site in your browser settings, or type the number below.');
+        }
+      };
+
+      useEffect(() => { startCamera(); return stopCamera; }, []);
+
+      const submitManual = () => {
+        const code = manualCode.replace(/\D/g, '');
+        if (code.length < 8 || code.length > 14) { setMessage('Enter the 8 to 14 digit number printed under the barcode.'); return; }
+        doLookup(code);
+      };
+
+      const g = Number(grams) > 0 ? Number(grams) : 0;
+      const n = (k) => Number(vals && vals[k]) || 0;
+      const preview = (k) => (n(k) * g) / 100;
+      const add = () => {
+        if (!(g > 0) || !product) return;
+        onAdd(scaleItem({
+          id: uid(), name: product.name, unit: 'g', weight_g: g, base_weight_g: 100,
+          base_calories: n('calories'), base_protein: n('protein'), base_carbs: n('carbs'), base_fat: n('fat'), base_fiber: n('fiber'),
+        }, g));
+        onClose();
+      };
+      const showCamera = status === 'starting' || status === 'scanning';
+      const canType = status !== 'result' && status !== 'loading';
+
+      return (
+        <div className="fixed inset-0 z-[60] bg-black flex flex-col safe-top safe-bottom">
+          <div className="flex items-center justify-between px-4 py-3">
+            <h3 className="text-sm font-semibold">Scan barcode</h3>
+            <button onClick={() => { stopCamera(); onClose(); }} aria-label="Close" className="p-2 -mr-2 text-zinc-300"><Icon name="x" /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
+            <div className={`relative rounded-2xl overflow-hidden bg-zinc-900 ${showCamera ? 'block' : 'hidden'}`}>
+              <video ref={videoRef} playsInline muted className="w-full max-h-[50dvh] object-cover" />
+              <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 h-24 border-2 border-emerald-400/80 rounded-xl pointer-events-none" />
+              <p className="absolute bottom-2 inset-x-0 text-center text-[11px] text-zinc-200">{status === 'starting' ? 'Starting camera…' : 'Point at the barcode'}</p>
+            </div>
+
+            {status === 'loading' && <p className="text-xs text-zinc-300 text-center py-8">Looking up product…</p>}
+            {message && status !== 'result' && <div className="bg-zinc-900 border border-zinc-800 text-zinc-200 text-xs p-3 rounded-xl">{message}</div>}
+
+            {canType && (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input type="text" inputMode="numeric" value={manualCode} onChange={(e) => setManualCode(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitManual(); }} placeholder="Or type the barcode number" className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                  <button onClick={submitManual} className="bg-blue-600 text-white text-xs px-4 py-2 rounded-xl">Look up</button>
+                </div>
+                {(status === 'notfound' || status === 'error' || status === 'unsupported') && (
+                  <button onClick={startCamera} className="w-full bg-zinc-800 text-xs font-medium py-2.5 rounded-xl">Scan again</button>
+                )}
+              </div>
+            )}
+
+            {status === 'result' && product && vals && (
+              <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                <div>
+                  <p className="text-sm font-semibold">{product.name}</p>
+                  <p className="text-[11px] text-zinc-500">Barcode {product.code} · Open Food Facts</p>
+                </div>
+                {!product.hasEnergy && <p className="text-[11px] text-amber-300">This product has no calorie data. Check the values below against the label.</p>}
+                <p className="text-[11px] text-zinc-400">Per 100 g (edit if the label differs)</p>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[['calories', 'kcal'], ['protein', 'P'], ['carbs', 'C'], ['fat', 'F'], ['fiber', 'Fib']].map(([k, label]) => (
+                    <div key={k}>
+                      <label className="text-[10px] text-zinc-500 block text-center">{label}</label>
+                      <input type="number" inputMode="decimal" value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })} aria-label={`${label} per 100 g`} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-1 py-1.5 text-center" />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <label htmlFor="scan-grams" className="text-zinc-400">Amount</label>
+                  <input id="scan-grams" type="number" inputMode="decimal" value={grams} onChange={(e) => setGrams(e.target.value)} className="w-24 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-center" />
+                  <span className="text-zinc-400">g</span>
+                </div>
+                <p className="text-xs"><span className="font-medium">{Math.round(preview('calories'))} kcal</span> · {preview('protein').toFixed(1)}g P · {preview('carbs').toFixed(1)}g C · {preview('fat').toFixed(1)}g F</p>
+                <div className="flex gap-2">
+                  <button onClick={startCamera} className="flex-1 bg-zinc-800 text-xs font-medium py-3 rounded-xl">Scan another</button>
+                  <button onClick={add} disabled={!(g > 0)} className="flex-1 bg-emerald-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -316,6 +482,7 @@
       const [foodLoading, setFoodLoading] = useState(false);
       const [foodManual, setFoodManual] = useState(EMPTY_INGREDIENT);
       const [foodQty, setFoodQty] = useState({});
+      const [scanOpen, setScanOpen] = useState(null); // null | 'meal' | 'food'
       const [recipeQuery, setRecipeQuery] = useState('');
       const [aiGeneratedRecipes, setAiGeneratedRecipes] = useState([]);
       const [isRecipeLoading, setIsRecipeLoading] = useState(false);
@@ -1232,6 +1399,7 @@
                       </div>
                     ) : (
                       <div className="space-y-2">
+                        <button onClick={() => setScanOpen('meal')} className="w-full flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl py-2.5 text-xs font-medium text-zinc-200"><Icon name="camera" /> Scan barcode</button>
                         <p className="text-[11px] text-zinc-400">My foods</p>
                         {customFoods.length === 0 ? (
                           <p className="text-[11px] text-zinc-500">Create your own foods under Recipes, My foods. They will show up here.</p>
@@ -1354,6 +1522,7 @@
                   <PhotoAttach images={foodPhotos} onChange={setFoodPhotos} onError={setFoodError} />
                   <button onClick={handleFoodAi} disabled={foodLoading || (!foodAiText.trim() && foodPhotos.length === 0)} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">{foodLoading ? 'Calculating…' : 'Calculate ingredients with AI'}</button>
 
+                  <button onClick={() => setScanOpen('food')} className="w-full flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl py-2.5 text-xs font-medium text-zinc-200"><Icon name="camera" /> Scan barcode</button>
                   <p className="text-[11px] text-zinc-400 pt-1">Or tap a staple</p>
                   <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
                     {COMMON_STAPLES.map((st) => (
@@ -1403,6 +1572,13 @@
                 <button onClick={saveFood} className="w-full bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl">Save food</button>
               </div>
             </div>
+          )}
+
+          {scanOpen && (
+            <BarcodeScanner
+              onClose={() => setScanOpen(null)}
+              onAdd={(item) => { if (scanOpen === 'meal') setDraftItems((p) => [...p, item]); else addFoodIngredient(item); }}
+            />
           )}
 
           <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#09090B]/95 backdrop-blur-md border-t border-zinc-800 px-4 pt-2 pb-2 safe-bottom">
