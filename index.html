@@ -457,6 +457,27 @@
       }
     };
 
+    // ---- meal categories ----
+    const CATEGORIES = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Other'];
+    const categoryForTime = (h, m = 0) => {
+      const t = h * 60 + m;
+      if (t >= 240 && t < 630) return 'Breakfast';   // 04:00 - 10:29
+      if (t >= 630 && t < 870) return 'Lunch';       // 10:30 - 14:29
+      if (t >= 870 && t < 1020) return 'Snack';      // 14:30 - 16:59
+      if (t >= 1020 && t < 1290) return 'Dinner';    // 17:00 - 21:29
+      return 'Snack';                                // late night
+    };
+    const autoCategory = () => { const d = new Date(); return categoryForTime(d.getHours(), d.getMinutes()); };
+    // Meals saved before categories existed get one from their logged time
+    const mealCategory = (m) => {
+      if (m && CATEGORIES.includes(m.category)) return m.category;
+      const x = /(\d{1,2}):(\d{2})\s*([AaPp])?/.exec((m && m.time) || '');
+      if (!x) return 'Other';
+      let h = Number(x[1]);
+      if (x[3]) h = (h % 12) + (/[Pp]/.test(x[3]) ? 12 : 0);
+      return categoryForTime(h, Number(x[2]));
+    };
+
     const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -509,6 +530,11 @@
 
       const [trackModalOpen, setTrackModalOpen] = useState(false);
       const [trackMode, setTrackMode] = useState('hub');
+      const [trackCategory, setTrackCategory] = useState(() => autoCategory());
+      const [reviewFromAi, setReviewFromAi] = useState(false);
+      const [aiThread, setAiThread] = useState([]);
+      const [followUp, setFollowUp] = useState('');
+      const [followLoading, setFollowLoading] = useState(false);
       const [manualSubMode, setManualSubMode] = useState('builder');
       const [manualMealName, setManualMealName] = useState('');
       const [quickMacros, setQuickMacros] = useState({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
@@ -580,30 +606,15 @@
           const text = (mode === 'photo' ? photoHint : aiPromptText).trim();
           const hasPhotos = aiPhotos.length > 0;
           const prompt = `You are a sports nutritionist.${hasPhotos ? ' Look at the attached photo(s): they may show a meal, food packaging or a nutrition label.' : ''}${text ? ` The user says: "${text}".` : ''}
-               Identify each ingredient, give its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g) for that weight. If the text or a nutrition label states values for a product (for example per 100g), use those exact numbers scaled to the amount eaten instead of estimating. Estimate weights only when none are given.
-               Return strictly JSON: { "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
+               Identify each ingredient, give its weight in grams (weight_g), and calculate calories, protein (g), carbs (g), fat (g), and fiber (g) for that weight. If the text or a nutrition label states values for a product (for example per 100g), use those exact numbers scaled to the amount eaten instead of estimating. Estimate weights only when none are given. In "notes", say in at most 2 short sentences which assumptions you made (for example portion sizes).
+               Return strictly JSON: { "meal_name": "String", "notes": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
 
           const result = await callGeminiJson(prompt, aiPhotos);
           setManualMealName(result.meal_name || 'Logged Meal');
-          setDraftItems((result.items || []).map((it, idx) => {
-            const w = Number(it.weight_g) || 100;
-            return {
-              id: uid(),
-              name: it.name || 'Ingredient',
-              weight_g: w,
-              base_weight_g: w,
-              base_calories: Number(it.calories) || 0,
-              base_protein: Number(it.protein) || 0,
-              base_carbs: Number(it.carbs) || 0,
-              base_fat: Number(it.fat) || 0,
-              base_fiber: Number(it.fiber) || 0,
-              calories: Math.round(Number(it.calories) || 0),
-              protein: Number(Number(it.protein || 0).toFixed(1)),
-              carbs: Number(Number(it.carbs || 0).toFixed(1)),
-              fat: Number(Number(it.fat || 0).toFixed(1)),
-              fiber: Number(Number(it.fiber || 0).toFixed(1)),
-            };
-          }));
+          setDraftItems((result.items || []).map(makeItem));
+          setReviewFromAi(true);
+          setAiThread(result.notes ? [{ role: 'ai', text: String(result.notes) }] : []);
+          setFollowUp('');
           setTrackMode('review');
         } catch (err) {
           setAiError(err.message);
@@ -662,6 +673,7 @@
             id: uid(),
             date: selectedDate,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            category: trackCategory,
             name: manualMealName.trim() || 'Quick Entry',
             items: [{
               id: uid(),
@@ -677,6 +689,7 @@
             id: uid(),
             date: selectedDate,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            category: trackCategory,
             name: manualMealName.trim() || 'Logged Meal',
             items: draftItems
           }, ...prev]);
@@ -692,9 +705,48 @@
         setPhotoHint('');
         setQuickMacros({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
         setAiError('');
+        setReviewFromAi(false); setAiThread([]); setFollowUp('');
       };
-      const openTrackModal = (mode) => { resetTrackForm(); setTrackMode(mode); setTrackModalOpen(true); };
+      const openTrackModal = (mode) => { resetTrackForm(); setTrackCategory(autoCategory()); setTrackMode(mode); setTrackModalOpen(true); };
       const closeTrackModal = () => { setTrackModalOpen(false); setTrackMode('hub'); resetTrackForm(); };
+
+      const handleFollowUp = async () => {
+        const q = followUp.trim();
+        if (!q || followLoading) return;
+        setAiError(''); setFollowLoading(true);
+        const thread = [...aiThread, { role: 'user', text: q }];
+        setAiThread(thread);
+        setFollowUp('');
+        try {
+          const current = draftItems.map((i) => ({ name: i.name, weight_g: i.weight_g, unit: i.unit || 'g', calories: i.calories, protein: i.protein, carbs: i.carbs, fat: i.fat, fiber: i.fiber }));
+          const original = (aiPromptText || photoHint || '').trim();
+          const history = thread.slice(0, -1).map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`).join(' | ') || 'none';
+          const prompt = `You are a sports nutritionist helping the user check a meal before it is logged.
+          Original description: "${original}".${aiPhotos.length ? ' The attached photo(s) show the meal, packaging or labels.' : ''}
+          Current draft (JSON): ${JSON.stringify({ meal_name: manualMealName, items: current })}
+          Conversation so far: ${history}
+          The user now says: "${q}"
+          If the user corrects, removes or adds foods or amounts, return the complete updated item list (weight_g in grams, macros for that weight). Use exact numbers the user states. If the user only asks a question, answer it and return the items unchanged. Keep the reply to 1-3 short sentences.
+          Return strictly JSON: { "reply": "String", "meal_name": "String", "items": [{ "name": "String", "weight_g": Number, "calories": Number, "protein": Number, "carbs": Number, "fat": Number, "fiber": Number }] }`;
+          const res = await callGeminiJson(prompt, aiPhotos);
+          if (Array.isArray(res.items) && res.items.length > 0) setDraftItems(res.items.map(makeItem));
+          if (res.meal_name && !manualMealName.trim()) setManualMealName(String(res.meal_name));
+          setAiThread((t) => [...t, { role: 'ai', text: String(res.reply || 'Updated.') }]);
+        } catch (err) {
+          setAiError(err.message);
+        } finally {
+          setFollowLoading(false);
+        }
+      };
+
+      // Copy the items of an earlier meal into the current draft (new ids so they can be edited)
+      const addRecentToDraft = (m) => {
+        setDraftItems((p) => [...p, ...m.items.map((i) => ({ ...i, id: uid() }))]);
+        setManualMealName((n) => n.trim() ? n : m.name);
+        setReviewFromAi(false);
+        setAiThread([]);
+        if (trackMode === 'hub') setTrackMode('review');
+      };
 
       const updateLoggedItemWeight = (mealId, itemId, newWeight) => {
         const w = Math.max(0, Number(newWeight) || 0);
@@ -754,6 +806,7 @@
           id: uid(),
           date: selectedDate,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          category: autoCategory(),
           name: `${recipe.name}${mult !== 1 ? ` (${mult}x)` : ''}`,
           items
         }, ...p]);
@@ -771,6 +824,36 @@
         });
         return acc;
       }, { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }), [todaysMeals]);
+
+      const recentForCategory = useMemo(() => {
+        const seen = new Set();
+        const out = [];
+        const sorted = [...meals].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        for (const m of sorted) {
+          if (mealCategory(m) !== trackCategory) continue;
+          const key = `${(m.name || '').trim().toLowerCase()}|${m.items.map((i) => i.name).join(',').toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(m);
+          if (out.length === 3) break;
+        }
+        return out;
+      }, [meals, trackCategory]);
+
+      const recentBlock = recentForCategory.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-zinc-400">Recent {trackCategory} entries</p>
+          {recentForCategory.map((m) => (
+            <button key={m.id} onClick={() => addRecentToDraft(m)} className="w-full flex items-center justify-between gap-2 bg-zinc-900 border border-zinc-800 rounded-xl p-2.5 text-left text-xs">
+              <span className="min-w-0">
+                <span className="block font-medium truncate">{m.name}</span>
+                <span className="block text-[11px] text-zinc-400 truncate">{m.items.map((i) => i.name).join(', ')}</span>
+              </span>
+              <span className="shrink-0 text-zinc-300">{Math.round(sumItems(m.items).calories)} kcal</span>
+            </button>
+          ))}
+        </div>
+      ) : null;
 
       const analyticsData = useMemo(() => {
         const days = [];
@@ -889,6 +972,7 @@
           id: uid(),
           date: selectedDate,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          category: autoCategory(),
           name: `${food.name}${q !== 1 ? ` (${q} ${food.unitLabel || 'serving'})` : ''}`,
           items: [foodToItem(food, 'serving', q)]
         }, ...p]);
@@ -1004,7 +1088,14 @@
                       <p className="text-xs text-zinc-400">Tap "Track food" to log manually, describe a meal, or snap a photo.</p>
                     </div>
                   ) : (
-                    todaysMeals.map((meal) => {
+                    CATEGORIES.map((cat) => {
+                      const group = todaysMeals.filter((m) => mealCategory(m) === cat);
+                      if (group.length === 0) return null;
+                      const groupCal = Math.round(sumItems(group.flatMap((m) => m.items)).calories);
+                      return (
+                    <div key={cat} className="space-y-2">
+                      <div className="flex justify-between text-xs px-1"><span className="font-semibold text-zinc-300">{cat}</span><span className="text-zinc-400">{groupCal} kcal</span></div>
+                      {group.map((meal) => {
                       const mTotals = meal.items.reduce((a, i) => ({
                         cal: a.cal + (Number(i.calories) || 0),
                         p: a.p + (Number(i.protein) || 0),
@@ -1038,6 +1129,12 @@
                           </div>
                           {isOpen && (
                             <div className="border-t border-zinc-800 bg-zinc-950/60 p-3 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <label htmlFor={`cat-${meal.id}`} className="text-zinc-400">Meal type</label>
+                                <select id={`cat-${meal.id}`} value={mealCategory(meal)} onChange={(e) => setMeals((p) => p.map((x) => x.id === meal.id ? { ...x, category: e.target.value } : x))} className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5">
+                                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                              </div>
                               {meal.items.map((it) => (
                                 <div key={it.id} className="flex items-center justify-between bg-zinc-900 rounded-xl p-2.5 text-xs">
                                   <div>
@@ -1058,6 +1155,9 @@
                             </div>
                           )}
                         </div>
+                      );
+                      })}
+                    </div>
                       );
                     })
                   )}
@@ -1256,6 +1356,22 @@
                         ) : <p className="text-xs text-zinc-500">Nothing logged yet.</p>}
                       </div>
 
+                      {(() => {
+                        const rows = CATEGORIES.map((c) => ({ c, cal: Math.round(sumItems(todaysMeals.filter((m) => mealCategory(m) === c).flatMap((m) => m.items)).calories) })).filter((r) => r.cal > 0);
+                        const maxCat = Math.max(1, ...rows.map((r) => r.cal));
+                        return rows.length > 0 && (
+                          <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
+                            <p className="text-xs font-semibold">By meal type</p>
+                            {rows.map((r) => (
+                              <div key={r.c} className="space-y-1">
+                                <div className="flex justify-between text-xs"><span className="text-zinc-300">{r.c}</span><span className="text-zinc-400">{r.cal} kcal</span></div>
+                                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${Math.max(3, Math.round((r.cal / maxCat) * 100))}%` }} /></div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
                       <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
                         <p className="text-xs font-semibold">Meals</p>
                         {mealRows.length === 0 ? <p className="text-xs text-zinc-500">Nothing logged for this day.</p> : mealRows.slice().reverse().map(({ m, cal }) => (
@@ -1399,8 +1515,15 @@
 
                 {aiError && <div className="bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs p-3 rounded-xl">{aiError}</div>}
 
+                <div className="flex gap-1.5 overflow-x-auto pb-1" role="group" aria-label="Meal type">
+                  {CATEGORIES.map((c) => (
+                    <button key={c} onClick={() => setTrackCategory(c)} aria-pressed={trackCategory === c} className={`shrink-0 text-xs px-2.5 py-1.5 rounded-full border ${trackCategory === c ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-300'}`}>{c}</button>
+                  ))}
+                </div>
+
                 {trackMode === 'hub' && (
                   <div className="grid gap-3">
+                    {recentBlock}
                     <button onClick={() => setTrackMode('manual')} className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl text-left">
                       <p className="text-sm font-semibold text-emerald-400">Manual log</p>
                       <p className="text-xs text-zinc-400">Tap common staples by gram weight or enter macros directly</p>
@@ -1431,6 +1554,7 @@
                       </div>
                     ) : (
                       <div className="space-y-2">
+                        {recentBlock}
                         <button onClick={() => setScanOpen('meal')} className="w-full flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl py-2.5 text-xs font-medium text-zinc-200"><Icon name="camera" /> Scan barcode</button>
                         <p className="text-[11px] text-zinc-400">My foods</p>
                         {customFoods.length === 0 ? (
@@ -1499,21 +1623,40 @@
 
                 {trackMode === 'review' && (
                   <div className="space-y-3">
-                    <input type="text" value={manualMealName} onChange={(e) => setManualMealName(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-semibold" />
+                    <input type="text" value={manualMealName} onChange={(e) => setManualMealName(e.target.value)} placeholder="Meal name" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-semibold" />
                     {draftItems.map((it) => (
-                      <div key={it.id} className="flex justify-between items-center bg-zinc-900 p-2.5 rounded-xl text-xs">
-                        <div>
-                          <p className="font-medium">{it.name}</p>
+                      <div key={it.id} className="flex justify-between items-center gap-2 bg-zinc-900 p-2.5 rounded-xl text-xs">
+                        <div className="min-w-0">
+                          <p className="font-medium truncate">{it.name}</p>
                           <p className="text-[11px] text-zinc-400">{it.calories} kcal · {it.protein}g P · {it.carbs}g C · {it.fat}g F</p>
                         </div>
-                        <div className="flex items-center gap-1">
-                          <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center" />
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} aria-label={`${it.name} amount`} className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-center" />
                           <span>{it.unit || 'g'}</span>
+                          <button onClick={() => setDraftItems((p) => p.filter((x) => x.id !== it.id))} aria-label={`Remove ${it.name}`} className="p-1.5 text-zinc-500 hover:text-rose-400"><Icon name="x" className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                     ))}
-                    <button onClick={saveMealToLog} className="w-full bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl">Save meal</button>
-                    <button onClick={() => setTrackMode('hub')} className="w-full text-xs text-zinc-400 py-2">Start over</button>
+                    {draftItems.length > 0 && (() => {
+                      const t = sumItems(draftItems);
+                      return <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs"><span className="font-medium">{Math.round(t.calories)} kcal</span> · {t.protein.toFixed(1)}g P · {t.carbs.toFixed(1)}g C · {t.fat.toFixed(1)}g F · {t.fiber.toFixed(1)}g fiber</div>;
+                    })()}
+
+                    {reviewFromAi && (
+                      <div className="space-y-2 pt-1">
+                        {aiThread.map((t, i) => (
+                          <div key={i} className={`text-xs rounded-xl px-3 py-2 ${t.role === 'user' ? 'bg-blue-600/20 border border-blue-500/30 ml-8' : 'bg-zinc-900 border border-zinc-800 mr-8'}`}>{t.text}</div>
+                        ))}
+                        {followLoading && <p className="text-[11px] text-zinc-400">Thinking…</p>}
+                        <div className="flex gap-2">
+                          <input type="text" value={followUp} onChange={(e) => setFollowUp(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleFollowUp(); }} placeholder="Correct or ask, e.g. the cheese was 30g" className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                          <button onClick={handleFollowUp} disabled={followLoading || !followUp.trim()} className="bg-blue-600 disabled:opacity-40 text-white text-xs px-4 py-2 rounded-xl">Send</button>
+                        </div>
+                      </div>
+                    )}
+
+                    <button onClick={saveMealToLog} disabled={draftItems.length === 0} className="w-full bg-emerald-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">Save to {trackCategory.toLowerCase()}</button>
+                    <button onClick={() => { resetTrackForm(); setTrackMode('hub'); }} className="w-full text-xs text-zinc-400 py-2">Start over</button>
                   </div>
                 )}
               </div>
