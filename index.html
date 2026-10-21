@@ -478,6 +478,9 @@
       return categoryForTime(h, Number(x[2]));
     };
 
+    const cloneItems = (items) => items.map((i) => ({ ...i, id: uid() }));
+    const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     const stripFences = (t) => String(t || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -516,6 +519,53 @@
 
       useEffect(() => { saveJson('macrolens_goals', goals); }, [goals]);
       useEffect(() => { saveJson('macrolens_foods', customFoods); }, [customFoods]);
+
+      const [trainingGoals, setTrainingGoals] = useState(() => {
+        const stored = loadJson('macrolens_training_goals', null);
+        if (stored) return { ...DEFAULT_GOALS, ...stored };
+        return { ...goals, calories: goals.calories + 300, carbs: goals.carbs + 75 };
+      });
+      const [dayOverrides, setDayOverrides] = useState(() => {
+        const o = loadJson('macrolens_day_types', {});
+        return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+      });
+      const [trainingWeekdays, setTrainingWeekdays] = useState(() => {
+        const w = loadJson('macrolens_training_weekdays', []);
+        return Array.isArray(w) ? w.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6) : [];
+      });
+      const [favorites, setFavorites] = useState(() => {
+        const f = loadJson('macrolens_favorites', []);
+        return Array.isArray(f) ? f.filter((x) => x && x.name && Array.isArray(x.items)) : [];
+      });
+      const [goalsTab, setGoalsTab] = useState('standard');
+      const [toast, setToast] = useState(null);
+      const [copyOpen, setCopyOpen] = useState(false);
+      const [copySource, setCopySource] = useState('');
+      const [copyUnchecked, setCopyUnchecked] = useState({});
+      const [editingMealId, setEditingMealId] = useState(null);
+      const [editDate, setEditDate] = useState('');
+      useEffect(() => { saveJson('macrolens_training_goals', trainingGoals); }, [trainingGoals]);
+      useEffect(() => { saveJson('macrolens_day_types', dayOverrides); }, [dayOverrides]);
+      useEffect(() => { saveJson('macrolens_training_weekdays', trainingWeekdays); }, [trainingWeekdays]);
+      useEffect(() => { saveJson('macrolens_favorites', favorites); }, [favorites]);
+      useEffect(() => {
+        if (!toast) return undefined;
+        const t = setTimeout(() => setToast(null), 6000);
+        return () => clearTimeout(t);
+      }, [toast]);
+
+      // Standard vs training day: a per-date switch wins, otherwise the usual training weekdays decide
+      const dayTypeFor = (dateStr) => {
+        if (dayOverrides[dateStr] === 'training' || dayOverrides[dateStr] === 'standard') return dayOverrides[dateStr];
+        const [y, m, d] = dateStr.split('-').map(Number);
+        return trainingWeekdays.includes(new Date(y, m - 1, d).getDay()) ? 'training' : 'standard';
+      };
+      const goalsFor = (dateStr) => dayTypeFor(dateStr) === 'training' ? trainingGoals : goals;
+      const dayType = dayTypeFor(selectedDate);
+      const activeGoals = goalsFor(selectedDate);
+      const editingTraining = goalsTab === 'training';
+      const editGoals = editingTraining ? trainingGoals : goals;
+      const setEditGoals = editingTraining ? setTrainingGoals : setGoals;
       useEffect(() => { saveJson('macrolens_meals', meals); }, [meals]);
       useEffect(() => { saveJson('macrolens_recipes', savedRecipes); }, [savedRecipes]);
       useEffect(() => { try { localStorage.setItem('macrolens_gemini_key', apiKey); } catch (e) {} }, [apiKey]);
@@ -661,6 +711,12 @@
       };
 
       const saveMealToLog = () => {
+        if (editingMealId) {
+          if (draftItems.length === 0) return;
+          setMeals((prev) => prev.map((m) => m.id === editingMealId ? { ...m, name: manualMealName.trim() || m.name, category: trackCategory, date: editDate || m.date, items: draftItems } : m));
+          closeTrackModal();
+          return;
+        }
         if (trackMode === 'manual' && manualSubMode === 'quick') {
           const cal = Number(quickMacros.calories) || 0;
           const p = Number(quickMacros.protein) || 0;
@@ -706,6 +762,7 @@
         setQuickMacros({ calories: '', protein: '', carbs: '', fat: '', fiber: '', weight_g: 100 });
         setAiError('');
         setReviewFromAi(false); setAiThread([]); setFollowUp('');
+        setEditingMealId(null);
       };
       const openTrackModal = (mode) => { resetTrackForm(); setTrackCategory(autoCategory()); setTrackMode(mode); setTrackModalOpen(true); };
       const closeTrackModal = () => { setTrackModalOpen(false); setTrackMode('hub'); resetTrackForm(); };
@@ -746,6 +803,47 @@
         setReviewFromAi(false);
         setAiThread([]);
         if (trackMode === 'hub') setTrackMode('review');
+      };
+
+      const showToast = (text, undoIds) => setToast({ text, undoIds });
+      const undoToast = () => {
+        if (toast && toast.undoIds) setMeals((p) => p.filter((m) => !toast.undoIds.includes(m.id)));
+        setToast(null);
+      };
+
+      // Copy meals to another day (new ids and time; category is kept)
+      const copyMealsTo = (list, targetDate, label) => {
+        if (list.length === 0) return;
+        const copies = list.map((m) => ({ id: uid(), date: targetDate, time: nowTime(), category: mealCategory(m), name: m.name, items: cloneItems(m.items) }));
+        setMeals((p) => [...copies, ...p]);
+        const where = targetDate === getTodayStr() ? 'today' : formatDay(targetDate);
+        showToast(`${label || (copies.length === 1 ? `Copied ${copies[0].name}` : `Copied ${copies.length} meals`)} to ${where}`, copies.map((c) => c.id));
+      };
+      const openCopy = () => { setCopySource(shiftDate(selectedDate, -1)); setCopyUnchecked({}); setCopyOpen(true); };
+      const confirmCopy = () => {
+        copyMealsTo(meals.filter((m) => m.date === copySource && !copyUnchecked[m.id]), selectedDate);
+        setCopyOpen(false);
+      };
+
+      const sameName = (a, b) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+      const isFavorite = (meal) => favorites.some((f) => sameName(f.name, meal.name));
+      const toggleFavorite = (meal) => {
+        if (isFavorite(meal)) setFavorites((p) => p.filter((f) => !sameName(f.name, meal.name)));
+        else setFavorites((p) => [...p, { id: uid(), name: meal.name, category: mealCategory(meal), items: cloneItems(meal.items) }]);
+      };
+      const quickAddFavorite = (f) => copyMealsTo([f], selectedDate, `Added ${f.name}`);
+
+      // Edit a logged meal in the same builder used for tracking
+      const editMeal = (meal) => {
+        resetTrackForm();
+        setEditingMealId(meal.id);
+        setEditDate(meal.date);
+        setManualMealName(meal.name);
+        setDraftItems(meal.items.map((i) => ({ ...i })));
+        setTrackCategory(mealCategory(meal));
+        setManualSubMode('builder');
+        setTrackMode('manual');
+        setTrackModalOpen(true);
       };
 
       const updateLoggedItemWeight = (mealId, itemId, newWeight) => {
@@ -840,6 +938,22 @@
         return out;
       }, [meals, trackCategory]);
 
+      const favoritesSorted = [...favorites].sort((a, b) => (b.category === trackCategory) - (a.category === trackCategory));
+      const favoritesBlock = favorites.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-zinc-400">Favourites</p>
+          {favoritesSorted.map((f) => (
+            <button key={f.id} onClick={() => addRecentToDraft(f)} className="w-full flex items-center justify-between gap-2 bg-zinc-900 border border-amber-500/20 rounded-xl p-2.5 text-left text-xs">
+              <span className="min-w-0">
+                <span className="block font-medium truncate">★ {f.name}</span>
+                <span className="block text-[11px] text-zinc-400 truncate">{f.items.map((i) => i.name).join(', ')}</span>
+              </span>
+              <span className="shrink-0 text-zinc-300">{Math.round(sumItems(f.items).calories)} kcal</span>
+            </button>
+          ))}
+        </div>
+      ) : null;
+
       const recentBlock = recentForCategory.length > 0 ? (
         <div className="space-y-1.5">
           <p className="text-[11px] text-zinc-400">Recent {trackCategory} entries</p>
@@ -865,15 +979,16 @@
           const dm = meals.filter((m) => m.date === dStr);
           let cal = 0;
           dm.forEach((m) => m.items.forEach((it) => cal += Number(it.calories) || 0));
-          days.push({ date: dStr.slice(5), calories: Math.round(cal) });
+          days.push({ date: dStr.slice(5), calories: Math.round(cal), goal: goalsFor(dStr).calories });
         }
         return days;
-      }, [meals, analyticsRange]);
+      }, [meals, analyticsRange, goals, trainingGoals, dayOverrides, trainingWeekdays]);
+      const avgGoal = Math.round(analyticsData.reduce((a, d) => a + d.goal, 0) / Math.max(1, analyticsData.length));
       const loggedDays = analyticsData.filter((d) => d.calories > 0);
       const avgCalories = loggedDays.length ? Math.round(loggedDays.reduce((a, d) => a + d.calories, 0) / loggedDays.length) : 0;
 
       const exportBackup = () => {
-        const blob = new Blob([JSON.stringify({ app: 'macrolens', version: 2, goals, meals, recipes: savedRecipes, foods: customFoods }, null, 2)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify({ app: 'macrolens', version: 3, goals, trainingGoals, dayTypes: dayOverrides, trainingWeekdays, favorites, meals, recipes: savedRecipes, foods: customFoods }, null, 2)], { type: 'application/json' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `macrolens-backup-${getTodayStr()}.json`;
@@ -891,6 +1006,10 @@
             if (d.app !== 'macrolens') throw new Error('bad');
             if (!window.confirm('Replace the data on this device with this backup?')) return;
             setGoals({ ...DEFAULT_GOALS, ...(d.goals || {}) });
+            setTrainingGoals({ ...DEFAULT_GOALS, ...(d.trainingGoals || d.goals || {}) });
+            setDayOverrides(d.dayTypes && typeof d.dayTypes === 'object' && !Array.isArray(d.dayTypes) ? d.dayTypes : {});
+            setTrainingWeekdays(Array.isArray(d.trainingWeekdays) ? d.trainingWeekdays.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6) : []);
+            setFavorites(Array.isArray(d.favorites) ? d.favorites.filter((x) => x && x.name && Array.isArray(x.items)) : []);
             setMeals(Array.isArray(d.meals) ? d.meals.filter((x) => x && Array.isArray(x.items)) : []);
             setSavedRecipes(Array.isArray(d.recipes) ? d.recipes : []);
             setCustomFoods(Array.isArray(d.foods) ? d.foods : []);
@@ -981,7 +1100,7 @@
 
       const saveRecipe = (r) => setSavedRecipes((p) => p.some((x) => x.name === r.name) ? p : [...p, r]);
 
-      const calPct = Math.min(100, Math.round((dailyTotals.calories / (goals.calories || 1)) * 100));
+      const calPct = Math.min(100, Math.round((dailyTotals.calories / (activeGoals.calories || 1)) * 100));
       const ringRadius = 66;
       const ringCircumference = 2 * Math.PI * ringRadius;
       const ringOffset = ringCircumference - (calPct / 100) * ringCircumference;
@@ -1027,6 +1146,11 @@
 
             {activeTab === 'dashboard' && (
               <>
+                <div className="flex items-center justify-between text-xs gap-2">
+                  <button onClick={() => setDayOverrides((o) => ({ ...o, [selectedDate]: dayType === 'training' ? 'standard' : 'training' }))} className={`px-3 py-1.5 rounded-full border ${dayType === 'training' ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300' : 'bg-zinc-900 border-zinc-800 text-zinc-300'}`}>{dayType === 'training' ? 'Training day' : 'Standard day'} · tap to switch</button>
+                  <button onClick={openCopy} className="text-blue-400 px-2 py-1.5">Copy from another day</button>
+                </div>
+
                 <section className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5">
                   <div className="flex flex-col sm:flex-row items-center gap-6">
                     <div className="relative flex items-center justify-center shrink-0">
@@ -1040,16 +1164,16 @@
                       </svg>
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                         <span className="text-2xl font-bold">{Math.round(dailyTotals.calories)}</span>
-                        <span className="text-[11px] text-zinc-400">/ {goals.calories} kcal</span>
+                        <span className="text-[11px] text-zinc-400">/ {activeGoals.calories} kcal</span>
                       </div>
                     </div>
 
                     <div className="w-full space-y-3">
                       {[
-                        { l: 'Protein', v: dailyTotals.protein, g: goals.protein, c: 'bg-blue-500', t: 'text-blue-400' },
-                        { l: 'Carbohydrates', v: dailyTotals.carbs, g: goals.carbs, c: 'bg-amber-500', t: 'text-amber-400' },
-                        { l: 'Fats', v: dailyTotals.fat, g: goals.fat, c: 'bg-pink-500', t: 'text-pink-400' },
-                        { l: 'Fiber', v: dailyTotals.fiber, g: goals.fiber, c: 'bg-violet-500', t: 'text-violet-400' },
+                        { l: 'Protein', v: dailyTotals.protein, g: activeGoals.protein, c: 'bg-blue-500', t: 'text-blue-400' },
+                        { l: 'Carbohydrates', v: dailyTotals.carbs, g: activeGoals.carbs, c: 'bg-amber-500', t: 'text-amber-400' },
+                        { l: 'Fats', v: dailyTotals.fat, g: activeGoals.fat, c: 'bg-pink-500', t: 'text-pink-400' },
+                        { l: 'Fiber', v: dailyTotals.fiber, g: activeGoals.fiber, c: 'bg-violet-500', t: 'text-violet-400' },
                       ].map((m) => (
                         <div key={m.l} className="space-y-1">
                           <div className="flex justify-between text-xs">
@@ -1079,6 +1203,20 @@
                     <span className="text-xs font-medium text-zinc-200">Snap photo</span>
                   </button>
                 </div>
+
+                {favorites.length > 0 && (
+                  <section className="space-y-2">
+                    <h2 className="text-sm font-semibold text-zinc-200">Favourites</h2>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {[...favorites].sort((a, b) => (b.category === autoCategory()) - (a.category === autoCategory())).map((f) => (
+                        <button key={f.id} onClick={() => quickAddFavorite(f)} className="shrink-0 bg-[#18181B] border border-[#27272A] rounded-xl px-3 py-2 text-left text-xs">
+                          <span className="block font-medium max-w-[9rem] truncate">★ {f.name}</span>
+                          <span className="block text-[11px] text-zinc-400">{Math.round(sumItems(f.items).calories)} kcal · tap to add</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
                 <section className="space-y-3">
                   <h2 className="text-sm font-semibold text-zinc-200">Logged Meals ({todaysMeals.length})</h2>
@@ -1134,6 +1272,11 @@
                                 <select id={`cat-${meal.id}`} value={mealCategory(meal)} onChange={(e) => setMeals((p) => p.map((x) => x.id === meal.id ? { ...x, category: e.target.value } : x))} className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5">
                                   {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                                 </select>
+                              </div>
+                              <div className="flex gap-2 text-xs">
+                                <button onClick={() => editMeal(meal)} className="flex-1 bg-zinc-800 py-2 rounded-lg">Edit</button>
+                                <button onClick={() => copyMealsTo([meal], getTodayStr(), `${meal.date === getTodayStr() ? 'Duplicated' : 'Copied'} ${meal.name}`)} className="flex-1 bg-zinc-800 py-2 rounded-lg">{meal.date === getTodayStr() ? 'Duplicate' : 'Copy to today'}</button>
+                                <button onClick={() => toggleFavorite(meal)} aria-pressed={isFavorite(meal)} className={`flex-1 py-2 rounded-lg ${isFavorite(meal) ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800'}`}>{isFavorite(meal) ? '★ Favourite' : '☆ Favourite'}</button>
                               </div>
                               {meal.items.map((it) => (
                                 <div key={it.id} className="flex items-center justify-between bg-zinc-900 rounded-xl p-2.5 text-xs">
@@ -1302,8 +1445,8 @@
                   const macroKcal = { protein: dailyTotals.protein * 4, carbs: dailyTotals.carbs * 4, fat: dailyTotals.fat * 9 };
                   const macroSum = macroKcal.protein + macroKcal.carbs + macroKcal.fat;
                   const pct = (v) => macroSum > 0 ? Math.round((v / macroSum) * 100) : 0;
-                  const goalPct = Math.min(100, Math.round((dailyTotals.calories / (goals.calories || 1)) * 100));
-                  const remaining = Math.round(goals.calories - dailyTotals.calories);
+                  const goalPct = Math.min(100, Math.round((dailyTotals.calories / (activeGoals.calories || 1)) * 100));
+                  const remaining = Math.round(activeGoals.calories - dailyTotals.calories);
                   const mealRows = todaysMeals.map((m) => ({ m, cal: Math.round(m.items.reduce((a, it) => a + (Number(it.calories) || 0), 0)) }));
                   const maxMeal = Math.max(1, ...mealRows.map((r) => r.cal));
                   const isToday = selectedDate >= getTodayStr();
@@ -1317,7 +1460,7 @@
 
                       <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-2">
                         <div className="flex items-end justify-between">
-                          <p className="text-2xl font-bold">{Math.round(dailyTotals.calories)} <span className="text-xs font-normal text-zinc-400">of {goals.calories} kcal</span></p>
+                          <p className="text-2xl font-bold">{Math.round(dailyTotals.calories)} <span className="text-xs font-normal text-zinc-400">of {activeGoals.calories} kcal</span></p>
                           <p className={`text-xs ${remaining < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{remaining >= 0 ? `${remaining} kcal left` : `${-remaining} kcal over`}</p>
                         </div>
                         <div className="h-2 bg-zinc-800 rounded-full overflow-hidden"><div className={`h-full rounded-full ${remaining < 0 ? 'bg-rose-500' : 'bg-blue-500'}`} style={{ width: `${goalPct}%` }} /></div>
@@ -1326,10 +1469,10 @@
                       <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
                         <p className="text-xs font-semibold">Macros vs goal</p>
                         {[
-                          { l: 'Protein', v: dailyTotals.protein, g: goals.protein, c: 'bg-blue-500' },
-                          { l: 'Carbs', v: dailyTotals.carbs, g: goals.carbs, c: 'bg-amber-500' },
-                          { l: 'Fat', v: dailyTotals.fat, g: goals.fat, c: 'bg-pink-500' },
-                          { l: 'Fiber', v: dailyTotals.fiber, g: goals.fiber, c: 'bg-violet-500' },
+                          { l: 'Protein', v: dailyTotals.protein, g: activeGoals.protein, c: 'bg-blue-500' },
+                          { l: 'Carbs', v: dailyTotals.carbs, g: activeGoals.carbs, c: 'bg-amber-500' },
+                          { l: 'Fat', v: dailyTotals.fat, g: activeGoals.fat, c: 'bg-pink-500' },
+                          { l: 'Fiber', v: dailyTotals.fiber, g: activeGoals.fiber, c: 'bg-violet-500' },
                         ].map((r) => (
                           <div key={r.l} className="space-y-1">
                             <div className="flex justify-between text-xs"><span className="text-zinc-300">{r.l}</span><span className="text-zinc-400">{r.v.toFixed(0)} / {r.g} g</span></div>
@@ -1387,13 +1530,13 @@
                   <>
                     <div>
                       <h2 className="text-base font-semibold">{analyticsView === 'week' ? 'Last 7 days' : 'Last 30 days'}</h2>
-                      <p className="text-xs text-zinc-400">{avgCalories ? `Average ${avgCalories} kcal on days you logged (goal ${goals.calories})` : `Goal ${goals.calories} kcal per day`}</p>
+                      <p className="text-xs text-zinc-400">{avgCalories ? `Average ${avgCalories} kcal on days you logged (goal ${avgGoal})` : `Goal ${avgGoal} kcal per day`}</p>
                     </div>
                     <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-4 space-y-3">
                       <div className="h-52 flex items-end gap-1.5 pt-6 border-b border-zinc-800 relative">
-                        <div className="absolute inset-x-0 border-t border-dashed border-zinc-600 pointer-events-none" style={{ bottom: `${Math.min(100, (goals.calories / Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1)) * 100)}%` }} />
+                        <div className="absolute inset-x-0 border-t border-dashed border-zinc-600 pointer-events-none" style={{ bottom: `${Math.min(100, (avgGoal / Math.max(avgGoal * 1.25, ...analyticsData.map((x) => x.calories), 1)) * 100)}%` }} />
                         {analyticsData.map((d, idx) => {
-                          const maxCal = Math.max(goals.calories * 1.25, ...analyticsData.map((x) => x.calories), 1);
+                          const maxCal = Math.max(avgGoal * 1.25, ...analyticsData.map((x) => x.calories), 1);
                           const hPct = Math.min(100, Math.round((d.calories / maxCal) * 100));
                           return (
                             <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end group">
@@ -1412,12 +1555,17 @@
             {activeTab === 'settings' && (
               <section className="space-y-4">
                 <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-4">
+                  <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
+                    {[['standard', 'Standard day'], ['training', 'Training day']].map(([id, label]) => (
+                      <button key={id} onClick={() => setGoalsTab(id)} className={`flex-1 py-1.5 rounded-lg ${goalsTab === id ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>{label}</button>
+                    ))}
+                  </div>
                   <div className="flex items-center justify-between">
-                    <h2 className="text-sm font-semibold">Calorie & Macro Split</h2>
+                    <h2 className="text-sm font-semibold">{editingTraining ? 'Training day goals' : 'Calorie & Macro Split'}</h2>
                     <button
                       onClick={() => {
-                        const rem = Math.max(0, goals.calories - goals.protein * 4);
-                        setGoals({ ...goals, carbs: Math.round((rem * 0.65) / 4), fat: Math.round((rem * 0.35) / 9) });
+                        const rem = Math.max(0, editGoals.calories - editGoals.protein * 4);
+                        setEditGoals({ ...editGoals, carbs: Math.round((rem * 0.65) / 4), fat: Math.round((rem * 0.35) / 9) });
                       }}
                       className="text-xs bg-zinc-800 text-blue-400 px-3 py-1 rounded-lg"
                     >
@@ -1436,13 +1584,35 @@
                         <label className="text-xs text-zinc-400">{f.l}</label>
                         <input
                           type="number"
-                          value={goals[f.k]}
-                          onChange={(e) => setGoals({ ...goals, [f.k]: Number(e.target.value) || 0 })}
+                          value={editGoals[f.k]}
+                          onChange={(e) => setEditGoals({ ...editGoals, [f.k]: Number(e.target.value) || 0 })}
                           className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm mt-1"
                         />
                       </div>
                     ))}
                   </div>
+                </div>
+
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-3">
+                  <h2 className="text-sm font-semibold">Training days</h2>
+                  <p className="text-xs text-zinc-400">Days you usually train use your Training day goals. You can also switch a single day on the Daily tab.</p>
+                  <div className="flex gap-1.5">
+                    {[[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [0, 'Sun']].map(([n, label]) => (
+                      <button key={n} onClick={() => setTrainingWeekdays((p) => p.includes(n) ? p.filter((x) => x !== n) : [...p, n])} aria-pressed={trainingWeekdays.includes(n)} className={`flex-1 text-[11px] py-2 rounded-lg border ${trainingWeekdays.includes(n) ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-3">
+                  <h2 className="text-sm font-semibold">Favourite meals</h2>
+                  {favorites.length === 0 ? (
+                    <p className="text-xs text-zinc-400">Open a logged meal on the Daily tab and tap Favourite to pin it here for one-tap adding.</p>
+                  ) : favorites.map((f) => (
+                    <div key={f.id} className="flex items-center justify-between gap-2 bg-zinc-900 rounded-xl p-2.5 text-xs">
+                      <span className="min-w-0"><span className="block font-medium truncate">{f.name}</span><span className="block text-[11px] text-zinc-400">{f.category} · {Math.round(sumItems(f.items).calories)} kcal</span></span>
+                      <button onClick={() => setFavorites((p) => p.filter((x) => x.id !== f.id))} className="text-zinc-400 hover:text-rose-400 px-2 py-1">Remove</button>
+                    </div>
+                  ))}
                 </div>
 
                 <div className="bg-[#18181B] border border-[#27272A] rounded-2xl p-5 space-y-2">
@@ -1509,7 +1679,7 @@
             <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
               <div className="bg-[#18181B] border border-[#27272A] w-full max-w-lg rounded-t-3xl sm:rounded-2xl max-h-[90dvh] overflow-y-auto p-5 space-y-4 safe-bottom">
                 <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-                  <h3 className="text-sm font-semibold">Track food</h3>
+                  <h3 className="text-sm font-semibold">{editingMealId ? 'Edit meal' : 'Track food'}</h3>
                   <button onClick={closeTrackModal} aria-label="Close" className="p-2 -mr-2 text-zinc-400"><Icon name="x" /></button>
                 </div>
 
@@ -1523,6 +1693,7 @@
 
                 {trackMode === 'hub' && (
                   <div className="grid gap-3">
+                    {favoritesBlock}
                     {recentBlock}
                     <button onClick={() => setTrackMode('manual')} className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl text-left">
                       <p className="text-sm font-semibold text-emerald-400">Manual log</p>
@@ -1541,11 +1712,17 @@
 
                 {trackMode === 'manual' && (
                   <div className="space-y-3">
-                    <div className="flex bg-zinc-900 rounded-xl p-1 text-xs">
+                    <div className={`${editingMealId ? 'hidden' : 'flex'} bg-zinc-900 rounded-xl p-1 text-xs`}>
                       <button onClick={() => setManualSubMode('builder')} className={`flex-1 py-1.5 rounded-lg ${manualSubMode === 'builder' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Gram builder</button>
                       <button onClick={() => setManualSubMode('quick')} className={`flex-1 py-1.5 rounded-lg ${manualSubMode === 'quick' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}>Quick macros</button>
                     </div>
                     <input type="text" value={manualMealName} onChange={(e) => setManualMealName(e.target.value)} placeholder="Meal name (e.g., Post-workout meal)" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs" />
+                    {editingMealId && (
+                      <div className="flex items-center justify-between text-xs">
+                        <label htmlFor="edit-date" className="text-zinc-400">Date</label>
+                        <input id="edit-date" type="date" value={editDate} onChange={(e) => { if (e.target.value) setEditDate(e.target.value); }} className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5" />
+                      </div>
+                    )}
                     {manualSubMode === 'quick' ? (
                       <div className="grid grid-cols-2 gap-2">
                         {['calories', 'protein', 'carbs', 'fat', 'fiber', 'weight_g'].map((k) => (
@@ -1554,7 +1731,8 @@
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {recentBlock}
+                        {!editingMealId && favoritesBlock}
+                        {!editingMealId && recentBlock}
                         <button onClick={() => setScanOpen('meal')} className="w-full flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl py-2.5 text-xs font-medium text-zinc-200"><Icon name="camera" /> Scan barcode</button>
                         <p className="text-[11px] text-zinc-400">My foods</p>
                         {customFoods.length === 0 ? (
@@ -1583,16 +1761,17 @@
                         </div>
                         {draftItems.map((it) => (
                           <div key={it.id} className="flex justify-between items-center bg-zinc-900 p-2 rounded-xl text-xs">
-                            <span>{it.name} ({it.calories} kcal)</span>
-                            <div className="flex items-center gap-1">
-                              <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-center" />
+                            <span className="min-w-0 truncate">{it.name} ({it.calories} kcal)</span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input type="number" inputMode="decimal" value={it.weight_g} onChange={(e) => updateDraftItemWeight(it.id, e.target.value)} aria-label={`${it.name} amount`} className="w-14 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-center" />
                               <span>{it.unit || 'g'}</span>
+                              <button onClick={() => setDraftItems((p) => p.filter((x) => x.id !== it.id))} aria-label={`Remove ${it.name}`} className="p-1.5 text-zinc-500 hover:text-rose-400"><Icon name="x" className="w-3.5 h-3.5" /></button>
                             </div>
                           </div>
                         ))}
                       </div>
                     )}
-                    <button onClick={saveMealToLog} disabled={manualSubMode === 'builder' && draftItems.length === 0} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">Save meal</button>
+                    <button onClick={saveMealToLog} disabled={manualSubMode === 'builder' && draftItems.length === 0} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">{editingMealId ? 'Save changes' : 'Save meal'}</button>
                   </div>
                 )}
 
@@ -1745,6 +1924,58 @@
                 })()}
 
                 <button onClick={saveFood} className="w-full bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl">Save food</button>
+              </div>
+            </div>
+          )}
+
+          {copyOpen && (() => {
+            const list = meals.filter((m) => m.date === copySource);
+            const chosen = list.filter((m) => !copyUnchecked[m.id]);
+            const same = copySource === selectedDate;
+            return (
+              <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+                <div className="bg-[#18181B] border border-[#27272A] w-full max-w-lg rounded-t-3xl sm:rounded-2xl max-h-[90dvh] overflow-y-auto p-5 space-y-4 safe-bottom">
+                  <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                    <h3 className="text-sm font-semibold">Copy meals</h3>
+                    <button onClick={() => setCopyOpen(false)} aria-label="Close" className="p-2 -mr-2 text-zinc-400"><Icon name="x" /></button>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <label htmlFor="copy-src" className="text-zinc-400">Copy from</label>
+                    <input id="copy-src" type="date" value={copySource} onChange={(e) => { if (e.target.value) { setCopySource(e.target.value); setCopyUnchecked({}); } }} className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5" />
+                  </div>
+                  {same && <p className="text-[11px] text-amber-300">Pick a different day than the one you are copying into.</p>}
+                  {list.length === 0 ? <p className="text-xs text-zinc-500">Nothing logged on this day.</p> : CATEGORIES.map((cat) => {
+                    const group = list.filter((m) => mealCategory(m) === cat);
+                    if (group.length === 0) return null;
+                    return (
+                      <div key={cat} className="space-y-1.5">
+                        <div className="flex justify-between text-xs">
+                          <span className="font-semibold text-zinc-300">{cat}</span>
+                          <button onClick={() => setCopyUnchecked(Object.fromEntries(list.filter((m) => mealCategory(m) !== cat).map((m) => [m.id, true])))} className="text-blue-400">Only {cat.toLowerCase()}</button>
+                        </div>
+                        {group.map((m) => (
+                          <label key={m.id} className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-2.5 text-xs cursor-pointer">
+                            <input type="checkbox" checked={!copyUnchecked[m.id]} onChange={() => setCopyUnchecked((u) => ({ ...u, [m.id]: !u[m.id] }))} className="w-4 h-4" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block font-medium truncate">{m.name}</span>
+                              <span className="block text-[11px] text-zinc-400">{Math.round(sumItems(m.items).calories)} kcal</span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    );
+                  })}
+                  <button onClick={confirmCopy} disabled={same || chosen.length === 0} className="w-full bg-blue-600 disabled:opacity-40 text-white text-xs font-semibold py-3 rounded-xl">Copy {chosen.length} {chosen.length === 1 ? 'meal' : 'meals'} to {formatDay(selectedDate)}</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {toast && (
+            <div className="fixed inset-x-0 bottom-24 z-[70] flex justify-center px-4 pointer-events-none">
+              <div className="pointer-events-auto bg-zinc-800 border border-zinc-700 text-xs rounded-xl px-4 py-2.5 flex items-center gap-3 shadow-lg" role="status">
+                <span>{toast.text}</span>
+                {toast.undoIds && <button onClick={undoToast} className="text-blue-400 font-semibold">Undo</button>}
               </div>
             </div>
           )}
